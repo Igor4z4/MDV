@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Markdown Viewer Pro (LLM Ready)</title>
+    <link rel="stylesheet" href="lib/katex.min.css">
+    <link rel="stylesheet" href="lib/highlight.css">
+    <link rel="icon" type="image/x-icon" href="favicon.ico">  
+    <style>
+        :root { --bg: #fafafa; --toolbar: #fff; --border: #ddd; --text: #24292e; --editor-bg: #fff; --viewer-bg: #fff; --code-bg: #f6f8fa; }
+        [data-theme="dark"] { --bg: #1e1e1e; --toolbar: #2d2d2d; --border: #444; --text: #e0e0e0; --editor-bg: #1e1e1e; --viewer-bg: #1e1e1e; --code-bg: #2d2d2d; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; display: flex; flex-direction: column; height: 100vh; background: var(--bg); color: var(--text); }
+        #toolbar { padding: 12px 20px; background: var(--toolbar); border-bottom: 1px solid var(--border); display: flex; gap: 15px; align-items: center; }
+        button { padding: 8px 16px; background: #4a6fa5; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        button:hover { background: #3a5a8c; }
+        #file-info { font-family: monospace; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        #main-container { display: flex; flex: 1; overflow: hidden; }
+        .pane { padding: 24px; }
+        #editor-pane { overflow: hidden; }
+        #viewer-pane { overflow: auto; }
+        #editor-pane { flex: 0 0 auto; width: 50%; }
+        #viewer-pane { flex: 1; }
+        #editor-pane { border-right: 1px solid var(--border); }
+        #editor { width: 100%; height: 100%; border: none; resize: none; font-family: 'SF Mono', monospace; font-size: 14px; line-height: 1.6; background: var(--editor-bg); color: var(--text); outline: none; }
+        #viewer { font-size: 16px; line-height: 1.6; }
+        #viewer pre code { background: var(--code-bg); border-radius: 6px; }
+        #status { padding: 4px 20px; font-size: 12px; border-top: 1px solid var(--border); background: var(--toolbar); }
+        #theme-selector { margin-left: auto; padding: 6px 10px; }
+        /* Разделитель панелей */
+        .resizer {
+            width: 5px;
+            background-color: var(--border);
+            cursor: col-resize;
+            transition: background-color 0.2s;
+            position: relative;
+            z-index: 10;
+        }
+        .resizer:hover {
+            background-color: #4a6fa5;
+        }
+        /* Фиксируем минимальную ширину панелей */
+        #editor-pane, #viewer-pane {
+            min-width: 200px;
+        }
+        /* Отключаем прокрутку всей страницы */
+        html, body {
+            height: 100%;
+            overflow: hidden;
+        }
+        /* Чтобы сам контейнер не добавлял прокрутки */
+        #main-container {
+            overflow: hidden;
+        }
+    </style>
+</head>
+<body>
+<div id="toolbar">
+    <button id="open-btn">📂 Открыть файл</button>
+    <span id="file-info">Файл не выбран</span>
+    <button id="btn-sync-scroll" style="background:#6c757d;">🔗 Синхр. прокрутку</button>
+    <button id="refresh-btn" style="background:#6c757d;">🔄 Обновить</button>
+    
+    <!-- Новые кнопки для изменения соотношения панелей -->
+    <button id="btn-preview-only" style="background:#28a745;">📺 100% Текст</button>
+    <button id="btn-25-75" style="background:#17a2b8;">25% / 75%</button>
+    <button id="btn-50-50" style="background:#ffc107; color:#333;">50% / 50%</button>
+    <button id="btn-75-25" style="background:#17a2b8;">75% / 25%</button>
+    <button id="btn-editor-only" style="background:#28a745;">✏️ 100% .md</button>
+
+    <select id="theme-selector">
+        <option value="light">☀️ Светлая</option>
+        <option value="dark">🌙 Тёмная</option>
+        <option value="system">🌓 Системная</option>
+    </select>
+</div>
+<div id="main-container">
+    <div id="editor-pane" class="pane">
+        <textarea id="editor" placeholder="Введите Markdown... Поддерживаются таблицы, чек-листы, формулы, диаграммы Mermaid, подсветка кода"></textarea>
+    </div>
+    <div class="resizer" id="resizer"></div>
+    <div id="viewer-pane" class="pane">
+        <div id="viewer"></div>
+    </div>
+</div>
+<div id="status">Готов. Поддержка расширенного Markdown + Mermaid + формулы</div>
+
+
+<script src="lib/markdown-it.min.js"></script>
+<script src="lib/markdown-it-multimd-table.min.js"></script>
+<script src="lib/markdown-it-task-lists.min.js"></script>
+<script src="lib/markdown-it-footnote.min.js"></script>
+<script src="lib/markdown-it-emoji.min.js"></script>
+<script src="lib/markdown-it-mark.min.js"></script>
+<script src="lib/markdown-it-sub.min.js"></script>
+<script src="lib/markdown-it-sup.min.js"></script>
+<script src="lib/texmath.js"></script>
+<script src="lib/katex.min.js"></script>
+<script src="lib/highlight.min.js"></script>
+<script src="lib/mermaid.min.js"></script>
+
+<script>
+    // --- Инициализация markdown-it без плагина mermaid (будем обрабатывать отдельно) ---
+    const md = window.markdownit({
+        html: true,
+        linkify: true,
+        typographer: true,
+        highlight: function (str, lang) {
+            if (lang && hljs.getLanguage(lang)) {
+                try {
+                    return hljs.highlight(str, { language: lang }).value;
+                } catch (__) {}
+            }
+            return ''; // обычный <pre><code>
+        }
+    });
+
+    // Подключаем плагины (кроме mermaid-плагина)
+    md.use(window.markdownitMultimdTable, { multiline: true, rowspan: true, headerless: true });
+    md.use(window.markdownitTaskLists, { enabled: true, label: true });
+    md.use(window.markdownitFootnote);
+    md.use(window.markdownitEmoji);
+    md.use(window.markdownitMark);
+    md.use(window.markdownitSub);
+    md.use(window.markdownitSup);
+
+    // texmath + KaTeX
+    if (window.texmath && window.katex) {
+        md.use(window.texmath, {
+            engine: window.katex,
+            delimiters: ['dollars', 'brackets'],
+            katexOptions: { macros: {}, displayMode: true }
+        });
+    } else {
+        console.warn("texmath или katex не загружены");
+    }
+
+    // --- DOM элементы ---
+    const editor = document.getElementById('editor');
+    const viewerDiv = document.getElementById('viewer');
+    const fileInfo = document.getElementById('file-info');
+    openBtn.addEventListener('click', async () => {
+        try {
+            const res = await window.electronAPI.openFileDialog();
+            if (res.canceled) return;
+            editor.value = res.content;
+            fileInfo.textContent = res.file_path;
+            renderPreview(res.content);
+            statusDiv.textContent = `Загружен: ${res.file_path}`;
+        } catch (e) {
+            alert('Ошибка: ' + e.message);
+        }
+    });
+    const refreshBtn = document.getElementById('refresh-btn');
+    const statusDiv = document.getElementById('status');
+    const themeSelector = document.getElementById('theme-selector');
+
+    // --- Тема ---
+    const htmlEl = document.documentElement;
+    function setTheme(theme) {
+        if (theme === 'system') {
+            htmlEl.removeAttribute('data-theme');
+            const dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+            htmlEl.setAttribute('data-theme', dark ? 'dark' : 'light');
+        } else {
+            htmlEl.setAttribute('data-theme', theme);
+        }
+        localStorage.setItem('md_theme', theme);
+        themeSelector.value = theme;
+    }
+    const savedTheme = localStorage.getItem('md_theme') || 'system';
+    setTheme(savedTheme);
+    themeSelector.addEventListener('change', e => setTheme(e.target.value));
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+        if (themeSelector.value === 'system') setTheme('system');
+    });
+
+    // --- Рендеринг Mermaid после обновления HTML ---
+    async function renderMermaidDiagrams() {
+        if (!window.mermaid) return;
+        // Инициализируем mermaid (один раз)
+        if (!window.mermaidInitialized) {
+            mermaid.initialize({ startOnLoad: false, theme: 'base' });
+            window.mermaidInitialized = true;
+        }
+        // Находим все элементы с классом language-mermaid (их создаёт markdown-it для блоков ```mermaid)
+        const mermaidBlocks = document.querySelectorAll('.language-mermaid');
+        if (mermaidBlocks.length > 0) {
+            try {
+                await mermaid.run({ nodes: mermaidBlocks });
+            } catch (err) {
+                console.warn('Mermaid error:', err);
+            }
+        }
+    }
+
+    // --- Основная функция рендеринга (с костылём) ---
+    async function renderPreview(text) {
+        try {
+            // Простой и надёжный костыль: всегда вставляем перевод строки перед [
+            text = text.replace(/\\\[/g, '\n\\[');
+            const html = md.render(text);
+            viewerDiv.innerHTML = html;
+            await renderMermaidDiagrams();
+        } catch (err) {
+            console.error(err);
+            viewerDiv.innerHTML = `<p style="color:red;">Ошибка рендеринга: ${err.message}</p>`;
+        }
+    }
+
+    // --- Обработчики ---
+    editor.addEventListener('input', () => renderPreview(editor.value));
+
+    openBtn.addEventListener('click', async () => {
+        try {
+            const res = await eel.open_file_dialog()();
+            if (res.canceled) return;
+            if (res.error) throw new Error(res.error);
+            editor.value = res.content;
+            fileInfo.textContent = res.file_path;
+            renderPreview(res.content);
+            statusDiv.textContent = `Загружен: ${res.file_path}`;
+        } catch (e) {
+            alert('Ошибка: ' + e.message);
+        }
+    });
+
+    refreshBtn.addEventListener('click', () => renderPreview(editor.value));
+
+    // --- Пример при загрузке ---
+    window.addEventListener('load', () => {
+        const sample = `# Расширенный Markdown для LLM
+
+## Таблица с объединением ячеек (multimd-table)
+| Left | Center | Right |
+|:-----|:------:|------:|
+| A    | B      | C     |
+| D    | E      | F     |
+^^ Rowspan test ^^ | G | H |
+
+## Чек-листы
+- [x] Сделано
+- [ ] Не сделано
+
+## Сноски
+Здесь есть сноска.[^1]
+[^1]: Текст сноски.
+
+## Эмодзи :smile: :rocket:
+
+## ==Выделение маркером== и ~~зачеркивание~~
+
+## Формулы
+Инлайн: $E = mc^2$
+
+Блочная: $$\\int_{-\\infty}^{\\infty} e^{-x^2} dx = \\sqrt{\\pi}$$
+
+## Диаграмма Mermaid
+\`\`\`mermaid
+graph TD
+    A[Вход] --> B{Решение}
+    B -->|Да| C[Выход1]
+    B -->|Нет| D[Выход2]
+\`\`\`
+
+## Код с подсветкой
+\`\`\`python
+def hello():
+    print("Hello, world!")
+\`\`\`
+`;
+        editor.value = sample;
+        renderPreview(sample);
+        statusDiv.textContent = 'Готов к работе. Перетащите файл или откройте через кнопку.';
+    });
+
+    // --- Drag & drop ---
+    document.addEventListener('dragover', e => e.preventDefault());
+    document.addEventListener('drop', async e => {
+        e.preventDefault();
+        const files = e.dataTransfer.files;
+        if (files.length === 0) return;
+        const file = files[0];
+        try {
+            const text = await file.text();
+            editor.value = text;
+            fileInfo.textContent = file.path || file.name;
+            renderPreview(text);
+            statusDiv.textContent = `Перетащен: ${file.name}`;
+        } catch (err) {
+            alert('Ошибка чтения: ' + err.message);
+        }
+    });
+
+ // --- Перетаскивание разделителя панелей ---
+const resizer = document.getElementById('resizer');
+const editorPane = document.getElementById('editor-pane');
+const viewerPane = document.getElementById('viewer-pane');
+const container = document.getElementById('main-container');
+
+let startX = 0;
+let startWidth = 0;
+
+function initResize(e) {
+    startX = e.clientX;
+    startWidth = editorPane.offsetWidth;
+    document.addEventListener('mousemove', doResize);
+    document.addEventListener('mouseup', stopResize);
+    document.body.style.cursor = 'col-resize';
+    e.preventDefault();
+}
+
+function doResize(e) {
+    const dx = e.clientX - startX;
+    const newWidth = startWidth + dx;
+    const containerWidth = container.offsetWidth;
+    const minWidth = 200;
+    const maxWidth = containerWidth - minWidth - 5; // 5px ширина разделителя
+    if (newWidth >= minWidth && newWidth <= maxWidth) {
+        editorPane.style.width = newWidth + 'px';
+        viewerPane.style.width = 'auto';
+        viewerPane.style.flex = '1';
+    }
+}
+
+function stopResize() {
+    document.removeEventListener('mousemove', doResize);
+    document.removeEventListener('mouseup', stopResize);
+    document.body.style.cursor = '';
+}
+
+resizer.addEventListener('mousedown', initResize);
+
+// --- Функции для полного скрытия/показа панелей ---
+function showBothPanes() {
+    const editorPane = document.getElementById('editor-pane');
+    const viewerPane = document.getElementById('viewer-pane');
+    const resizer = document.getElementById('resizer');
+    if (editorPane) editorPane.style.display = '';
+    if (viewerPane) viewerPane.style.display = '';
+    if (resizer) resizer.style.display = '';
+    // Сбросим стили ширины, чтобы вернуться к flex-раскладке
+    editorPane.style.width = '';
+    editorPane.style.flex = '0 0 auto';
+    viewerPane.style.width = '';
+    viewerPane.style.flex = '1';
+    // Принудительно пересчитаем макет, чтобы применить дефолтные пропорции (например, 50%)
+    setLayout(50);
+}
+
+function hideEditorOnly() {
+    const editorPane = document.getElementById('editor-pane');
+    const resizer = document.getElementById('resizer');
+    const viewerPane = document.getElementById('viewer-pane');
+    if (editorPane) editorPane.style.display = 'none';
+    if (resizer) resizer.style.display = 'none';
+    if (viewerPane) viewerPane.style.display = '';
+    viewerPane.style.flex = '1';
+}
+
+function hideViewerOnly() {
+    const editorPane = document.getElementById('editor-pane');
+    const resizer = document.getElementById('resizer');
+    const viewerPane = document.getElementById('viewer-pane');
+    if (viewerPane) viewerPane.style.display = 'none';
+    if (resizer) resizer.style.display = 'none';
+    if (editorPane) editorPane.style.display = '';
+    editorPane.style.flex = '1';
+}
+
+function setLayout(editorWidthPercent) {
+    const container = document.getElementById('main-container');
+    const editorPane = document.getElementById('editor-pane');
+    const viewerPane = document.getElementById('viewer-pane');
+    const resizer = document.getElementById('resizer');
+    
+    if (!container || !editorPane || !viewerPane) return;
+    
+    // Убедимся, что панели видимы (на случай, если были скрыты)
+    editorPane.style.display = '';
+    viewerPane.style.display = '';
+    resizer.style.display = '';
+    
+    const containerWidth = container.offsetWidth;
+    const resizerWidth = 5;
+    let editorWidthPx = (containerWidth * editorWidthPercent) / 100;
+    
+    const minWidth = 200;
+    if (editorWidthPx < minWidth) editorWidthPx = minWidth;
+    const maxWidth = containerWidth - minWidth - resizerWidth;
+    if (editorWidthPx > maxWidth) editorWidthPx = maxWidth;
+    
+    editorPane.style.width = editorWidthPx + 'px';
+    editorPane.style.flex = '0 0 auto';
+    viewerPane.style.width = 'auto';
+    viewerPane.style.flex = '1';
+}
+
+// --- Обработчики кнопок с новым поведением ---
+document.getElementById('btn-preview-only').addEventListener('click', hideEditorOnly);
+document.getElementById('btn-editor-only').addEventListener('click', hideViewerOnly);
+document.getElementById('btn-25-75').addEventListener('click', () => { showBothPanes(); setLayout(25); });
+document.getElementById('btn-50-50').addEventListener('click', () => { showBothPanes(); setLayout(50); });
+document.getElementById('btn-75-25').addEventListener('click', () => { showBothPanes(); setLayout(75); });
+
+// --- Синхронизация прокрутки между редактором и предпросмотром (исправлено) ---
+let syncScrollEnabled = true;   // ← включена по умолчанию
+let scrollSource = null;
+
+const editorElem = document.getElementById('editor');
+const viewerPaneElem = document.getElementById('viewer-pane'); // ← слушаем панель, а не внутренний div
+const syncBtn = document.getElementById('btn-sync-scroll');
+
+// Функции процентов (те же)
+function getScrollPercent(element) {
+    const scrollTop = element.scrollTop;
+    const scrollHeight = element.scrollHeight;
+    const clientHeight = element.clientHeight;
+    if (scrollHeight <= clientHeight) return 0;
+    return scrollTop / (scrollHeight - clientHeight);
+}
+
+function setScrollPercent(element, percent) {
+    const scrollHeight = element.scrollHeight;
+    const clientHeight = element.clientHeight;
+    if (scrollHeight <= clientHeight) return;
+    element.scrollTop = percent * (scrollHeight - clientHeight);
+}
+
+// Обработчики
+function onEditorScroll() {
+    if (!syncScrollEnabled) return;
+    if (scrollSource === 'viewer') return;
+    scrollSource = 'editor';
+    const percent = getScrollPercent(editorElem);
+    setScrollPercent(viewerPaneElem, percent);
+    scrollSource = null;
+}
+
+function onViewerScroll() {
+    if (!syncScrollEnabled) return;
+    if (scrollSource === 'editor') return;
+    scrollSource = 'viewer';
+    const percent = getScrollPercent(viewerPaneElem);
+    setScrollPercent(editorElem, percent);
+    scrollSource = null;
+}
+
+// Назначаем обработчики
+editorElem.addEventListener('scroll', onEditorScroll);
+viewerPaneElem.addEventListener('scroll', onViewerScroll);
+
+// Настройка кнопки (состояние по умолчанию – включено)
+syncBtn.style.background = '#28a745';
+syncBtn.textContent = '🔗 Синхр. (вкл)';
+
+syncBtn.addEventListener('click', () => {
+    syncScrollEnabled = !syncScrollEnabled;
+    syncBtn.style.background = syncScrollEnabled ? '#28a745' : '#6c757d';
+    syncBtn.textContent = syncScrollEnabled ? '🔗 Синхр. (вкл)' : '🔗 Синхр. прокрутку';
+});
+
+</script>
+</body>
+</html>
