@@ -53,6 +53,37 @@
         #main-container {
             overflow: hidden;
         }
+
+        #viewer-container {
+            display: flex;
+            height: 100%;
+        }
+        #viewer-scroll {
+            flex: 1;
+            overflow: auto;
+            padding: 20px;
+        }
+        #viewer-resizer {
+            width: 5px;
+            background-color: var(--border);
+            cursor: col-resize;
+            transition: background 0.2s;
+        }
+        #viewer-resizer:hover {
+            background-color: #4a6fa5;
+        }
+        /* Чтобы контент внутри viewer не разрывался */
+        #viewer {
+            max-width: 100%;
+        }        
+        
+        .margin-resizer {
+            transition: background-color 0.2s;
+            user-select: none;
+        }
+        .margin-resizer:hover {
+            background-color: #4a6fa5;
+        }        
     </style>
 </head>
 <body>
@@ -81,7 +112,13 @@
     </div>
     <div class="resizer" id="resizer"></div>
     <div id="viewer-pane" class="pane">
-        <div id="viewer"></div>
+        <div id="viewer-wrapper" style="display: flex; height: 100%; align-items: stretch;">
+            <div id="left-margin-resizer" class="margin-resizer" style="width: 25%; background-color: var(--border); cursor: col-resize;"></div>
+            <div id="viewer-scroll" style="flex: 1; overflow: auto; padding: 20px;">
+                <div id="viewer"></div>
+            </div>
+            <div id="right-margin-resizer" class="margin-resizer" style="width: 25%; background-color: var(--border); cursor: col-resize;"></div>
+        </div>
     </div>
 </div>
 <div id="status">Готов. Поддержка расширенного Markdown + Mermaid + формулы</div>
@@ -146,7 +183,7 @@
     const themeSelector = document.getElementById('theme-selector');
     const syncBtn = document.getElementById('btn-sync-scroll');
     const editorElem = document.getElementById('editor');
-    const viewerPaneElem = document.getElementById('viewer-pane');
+    const viewerPaneElem = document.getElementById('viewer-scroll');
     const resizer = document.getElementById('resizer');
     const editorPane = document.getElementById('editor-pane');
     const viewerPane = document.getElementById('viewer-pane');
@@ -330,6 +367,9 @@ def hello():
         viewerPane.style.width = '';
         viewerPane.style.flex = '1';
         setLayout(50);
+        // Скрыть ресайзеры отступов (режим с двумя панелями)
+        if (leftResizer) leftResizer.style.display = 'none';
+        if (rightResizer) rightResizer.style.display = 'none';
     }
 
     function hideEditorOnly() {
@@ -337,6 +377,9 @@ def hello():
         if (resizer) resizer.style.display = 'none';
         if (viewerPane) viewerPane.style.display = '';
         viewerPane.style.flex = '1';
+        // Показать ресайзеры (режим только предпросмотра)
+        if (leftResizer) leftResizer.style.display = 'flex';
+        if (rightResizer) rightResizer.style.display = 'flex';
     }
 
     function hideViewerOnly() {
@@ -344,6 +387,9 @@ def hello():
         if (resizer) resizer.style.display = 'none';
         if (editorPane) editorPane.style.display = '';
         editorPane.style.flex = '1';
+        // Ресайзеры не видны (панель просмотра скрыта)
+        if (leftResizer) leftResizer.style.display = 'none';
+        if (rightResizer) rightResizer.style.display = 'none';
     }
 
     function setLayout(editorWidthPercent) {
@@ -418,6 +464,95 @@ def hello():
         syncBtn.style.background = syncScrollEnabled ? '#28a745' : '#6c757d';
         syncBtn.textContent = syncScrollEnabled ? '🔗 Синхр. (вкл)' : '🔗 Синхр. прокрутку';
     });
+
+    // --- Синхронные ресайзеры левого и правого отступов (симметричные) ---
+    const leftResizer = document.getElementById('left-margin-resizer');
+    const rightResizer = document.getElementById('right-margin-resizer');
+    const viewerWrapper = document.getElementById('viewer-wrapper');
+    let activeResizer = null;
+    let startX_sym = 0;
+    let startLeftWidth = 0;
+    let startRightWidth = 0;
+
+    // Функция обновления ширины обоих ресайзеров (синхронно)
+    function setMargins(leftWidthPx, rightWidthPx) {
+        if (leftResizer) leftResizer.style.width = leftWidthPx + 'px';
+        if (rightResizer) rightResizer.style.width = rightWidthPx + 'px';
+    }
+
+    function initSymResize(e, isLeft) {
+        activeResizer = isLeft ? 'left' : 'right';
+        startX_sym = e.clientX;
+        const wrapperRect = viewerWrapper.getBoundingClientRect();
+        const leftWidth = leftResizer ? leftResizer.offsetWidth : 0;
+        const rightWidth = rightResizer ? rightResizer.offsetWidth : 0;
+        startLeftWidth = leftWidth;
+        startRightWidth = rightWidth;
+        document.addEventListener('mousemove', doSymResize);
+        document.addEventListener('mouseup', stopSymResize);
+        document.body.style.cursor = 'col-resize';
+        e.preventDefault();
+    }
+
+    function doSymResize(e) {
+        if (!activeResizer) return;
+        const dx = e.clientX - startX_sym;
+        let newLeft = startLeftWidth;
+        let newRight = startRightWidth;
+        if (activeResizer === 'left') {
+            newLeft = startLeftWidth + dx;
+            newRight = startRightWidth + dx;  // синхронно
+        } else { // right
+            newLeft = startLeftWidth - dx;
+            newRight = startRightWidth - dx;
+        }
+        // Минимальная и максимальная ширина ресайзеров (в пикселях)
+        const minMargin = 50;
+        const maxMargin = Math.min(viewerWrapper.offsetWidth - 200, 500); // контент не меньше 200px
+        if (newLeft < minMargin) newLeft = minMargin;
+        if (newRight < minMargin) newRight = minMargin;
+        if (newLeft > maxMargin) newLeft = maxMargin;
+        if (newRight > maxMargin) newRight = maxMargin;
+        setMargins(newLeft, newRight);
+        // Сохраняем значение (в процентах от ширины wrapper)
+        const wrapperWidth = viewerWrapper.offsetWidth;
+        const percent = (newLeft / wrapperWidth) * 100;
+        localStorage.setItem('viewer_margin_percent', percent);
+    }
+
+    function stopSymResize() {
+        activeResizer = null;
+        document.removeEventListener('mousemove', doSymResize);
+        document.removeEventListener('mouseup', stopSymResize);
+        document.body.style.cursor = '';
+    }
+
+    // Назначаем обработчики
+    if (leftResizer) {
+        leftResizer.addEventListener('mousedown', (e) => initSymResize(e, true));
+    }
+    if (rightResizer) {
+        rightResizer.addEventListener('mousedown', (e) => initSymResize(e, false));
+    }
+
+    // Восстановление сохранённого процента при загрузке и изменении размера окна
+    function restoreMargins() {
+        const savedPercent = localStorage.getItem('viewer_margin_percent');
+        let percent = savedPercent ? parseFloat(savedPercent) : 25; // по умолчанию 25%
+        if (isNaN(percent)) percent = 25;
+        const wrapperWidth = viewerWrapper.offsetWidth;
+        const marginWidth = (wrapperWidth * percent) / 100;
+        setMargins(marginWidth, marginWidth);
+        // Начальный режим — две панели, ресайзеры не нужны
+        if (leftResizer) leftResizer.style.display = 'none';
+        if (rightResizer) rightResizer.style.display = 'none';
+    }
+
+    window.addEventListener('resize', () => {
+        restoreMargins();
+    });
+    restoreMargins();
+
 </script>
 
 </body>
