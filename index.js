@@ -13,10 +13,9 @@ function createWindow() {
         }
     });
     win.loadFile('web/index.html');
-    // win.webContents.openDevTools(); // для отладки
+    // win.webContents.openDevTools();
 }
 
-// Обработчик диалога выбора файла
 ipcMain.handle('dialog:openFile', async () => {
     const { canceled, filePaths } = await dialog.showOpenDialog({
         properties: ['openFile'],
