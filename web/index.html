@@ -113,11 +113,11 @@
     <div class="resizer" id="resizer"></div>
     <div id="viewer-pane" class="pane">
         <div id="viewer-wrapper" style="display: flex; height: 100%; align-items: stretch;">
-            <div id="left-margin-resizer" class="margin-resizer" style="width: 25%; background-color: var(--border); cursor: col-resize;"></div>
+            <div id="left-margin-resizer" class="margin-resizer" style="background-color: var(--border); cursor: col-resize;"></div>
             <div id="viewer-scroll" style="flex: 1; overflow: auto; padding: 20px;">
                 <div id="viewer"></div>
             </div>
-            <div id="right-margin-resizer" class="margin-resizer" style="width: 25%; background-color: var(--border); cursor: col-resize;"></div>
+            <div id="right-margin-resizer" class="margin-resizer" style="background-color: var(--border); cursor: col-resize;"></div>
         </div>
     </div>
 </div>
@@ -380,6 +380,8 @@ def hello():
         // Показать ресайзеры (режим только предпросмотра)
         if (leftResizer) leftResizer.style.display = 'flex';
         if (rightResizer) rightResizer.style.display = 'flex';
+        // Восстановить сохранённую ширину отступов (применяет DEFAULT, если нет сохранённой)
+        restoreMargins();
     }
 
     function hideViewerOnly() {
@@ -465,10 +467,14 @@ def hello():
         syncBtn.textContent = syncScrollEnabled ? '🔗 Синхр. (вкл)' : '🔗 Синхр. прокрутку';
     });
 
-    // --- Синхронные ресайзеры левого и правого отступов (симметричные) ---
+    // --- Ресайзеры левого и правого отступов (симметричные) ---
     const leftResizer = document.getElementById('left-margin-resizer');
     const rightResizer = document.getElementById('right-margin-resizer');
     const viewerWrapper = document.getElementById('viewer-wrapper');
+        // Константы для отступов (в процентах)
+        const MIN_MARGIN_PERCENT = 2;
+        const MAX_MARGIN_PERCENT = 45;
+        const DEFAULT_MARGIN_PERCENT = 45;
     let activeResizer = null;
     let startX_sym = 0;
     let startLeftWidth = 0;
@@ -501,23 +507,33 @@ def hello():
         let newRight = startRightWidth;
         if (activeResizer === 'left') {
             newLeft = startLeftWidth + dx;
-            newRight = startRightWidth + dx;  // синхронно
-        } else { // right
+            newRight = startRightWidth + dx;
+        } else {
             newLeft = startLeftWidth - dx;
             newRight = startRightWidth - dx;
         }
-        // Минимальная и максимальная ширина ресайзеров (в пикселях)
-        const minMargin = 50;
-        const maxMargin = Math.min(viewerWrapper.offsetWidth - 200, 500); // контент не меньше 200px
+        const wrapperWidth = viewerWrapper.offsetWidth;
+        const minMargin = wrapperWidth * MIN_MARGIN_PERCENT / 100;
+        const maxMargin = wrapperWidth * MAX_MARGIN_PERCENT / 100;
         if (newLeft < minMargin) newLeft = minMargin;
         if (newRight < minMargin) newRight = minMargin;
         if (newLeft > maxMargin) newLeft = maxMargin;
         if (newRight > maxMargin) newRight = maxMargin;
         setMargins(newLeft, newRight);
-        // Сохраняем значение (в процентах от ширины wrapper)
-        const wrapperWidth = viewerWrapper.offsetWidth;
         const percent = (newLeft / wrapperWidth) * 100;
         localStorage.setItem('viewer_margin_percent', percent);
+    }
+
+    function restoreMargins() {
+        const savedPercent = localStorage.getItem('viewer_margin_percent');
+        let percent = savedPercent ? parseFloat(savedPercent) : DEFAULT_MARGIN_PERCENT;
+        if (isNaN(percent)) percent = DEFAULT_MARGIN_PERCENT;
+        // Ограничиваем сохранённый процент допустимыми пределами
+        if (percent < MIN_MARGIN_PERCENT) percent = MIN_MARGIN_PERCENT;
+        if (percent > MAX_MARGIN_PERCENT) percent = MAX_MARGIN_PERCENT;
+        const wrapperWidth = viewerWrapper.offsetWidth;
+        const marginWidth = (wrapperWidth * percent) / 100;
+        setMargins(marginWidth, marginWidth);
     }
 
     function stopSymResize() {
@@ -535,23 +551,15 @@ def hello():
         rightResizer.addEventListener('mousedown', (e) => initSymResize(e, false));
     }
 
-    // Восстановление сохранённого процента при загрузке и изменении размера окна
-    function restoreMargins() {
-        const savedPercent = localStorage.getItem('viewer_margin_percent');
-        let percent = savedPercent ? parseFloat(savedPercent) : 25; // по умолчанию 25%
-        if (isNaN(percent)) percent = 25;
-        const wrapperWidth = viewerWrapper.offsetWidth;
-        const marginWidth = (wrapperWidth * percent) / 100;
-        setMargins(marginWidth, marginWidth);
-        // Начальный режим — две панели, ресайзеры не нужны
-        if (leftResizer) leftResizer.style.display = 'none';
-        if (rightResizer) rightResizer.style.display = 'none';
-    }
 
+    // Начальный экран
     window.addEventListener('resize', () => {
         restoreMargins();
     });
     restoreMargins();
+    
+    // По умолчанию открываем в режиме 100% Текст (только предпросмотр)
+    hideEditorOnly();
 
 </script>
 
