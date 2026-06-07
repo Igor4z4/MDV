@@ -551,6 +551,21 @@ def hello():
         rightResizer.addEventListener('mousedown', (e) => initSymResize(e, false));
     }
 
+    // --- Открытие файла из аргументов командной строки (двойной клик по .md) ---
+    if (window.electronAPI.onOpenFile) {
+        window.electronAPI.onOpenFile(async (filePath) => {
+            try {
+                const content = await window.electronAPI.readFile(filePath);
+                editor.value = content;
+                fileInfo.textContent = filePath;
+                renderPreview(content);
+                statusDiv.textContent = `Загружен: ${filePath}`;
+            } catch (err) {
+                console.error('Ошибка открытия файла:', err);
+                alert('Ошибка открытия файла: ' + err.message);
+            }
+        });
+    }
 
     // Начальный экран
     window.addEventListener('resize', () => {
