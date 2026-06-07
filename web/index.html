@@ -136,25 +136,21 @@
         console.warn("texmath или katex не загружены");
     }
 
-    // --- DOM элементы ---
+    // --- DOM элементы (объявляем все в начале) ---
     const editor = document.getElementById('editor');
     const viewerDiv = document.getElementById('viewer');
     const fileInfo = document.getElementById('file-info');
-    openBtn.addEventListener('click', async () => {
-        try {
-            const res = await window.electronAPI.openFileDialog();
-            if (res.canceled) return;
-            editor.value = res.content;
-            fileInfo.textContent = res.file_path;
-            renderPreview(res.content);
-            statusDiv.textContent = `Загружен: ${res.file_path}`;
-        } catch (e) {
-            alert('Ошибка: ' + e.message);
-        }
-    });
+    const openBtn = document.getElementById('open-btn');
     const refreshBtn = document.getElementById('refresh-btn');
     const statusDiv = document.getElementById('status');
     const themeSelector = document.getElementById('theme-selector');
+    const syncBtn = document.getElementById('btn-sync-scroll');
+    const editorElem = document.getElementById('editor');
+    const viewerPaneElem = document.getElementById('viewer-pane');
+    const resizer = document.getElementById('resizer');
+    const editorPane = document.getElementById('editor-pane');
+    const viewerPane = document.getElementById('viewer-pane');
+    const container = document.getElementById('main-container');
 
     // --- Тема ---
     const htmlEl = document.documentElement;
@@ -179,12 +175,10 @@
     // --- Рендеринг Mermaid после обновления HTML ---
     async function renderMermaidDiagrams() {
         if (!window.mermaid) return;
-        // Инициализируем mermaid (один раз)
         if (!window.mermaidInitialized) {
             mermaid.initialize({ startOnLoad: false, theme: 'base' });
             window.mermaidInitialized = true;
         }
-        // Находим все элементы с классом language-mermaid (их создаёт markdown-it для блоков ```mermaid)
         const mermaidBlocks = document.querySelectorAll('.language-mermaid');
         if (mermaidBlocks.length > 0) {
             try {
@@ -195,10 +189,9 @@
         }
     }
 
-    // --- Основная функция рендеринга (с костылём) ---
+    // --- Основная функция рендеринга ---
     async function renderPreview(text) {
         try {
-            // Простой и надёжный костыль: всегда вставляем перевод строки перед [
             text = text.replace(/\\\[/g, '\n\\[');
             const html = md.render(text);
             viewerDiv.innerHTML = html;
@@ -212,11 +205,11 @@
     // --- Обработчики ---
     editor.addEventListener('input', () => renderPreview(editor.value));
 
+    // НОВЫЙ обработчик открытия файла (без eel)
     openBtn.addEventListener('click', async () => {
         try {
-            const res = await eel.open_file_dialog()();
+            const res = await window.electronAPI.openFileDialog();
             if (res.canceled) return;
-            if (res.error) throw new Error(res.error);
             editor.value = res.content;
             fileInfo.textContent = res.file_path;
             renderPreview(res.content);
@@ -293,174 +286,139 @@ def hello():
         }
     });
 
- // --- Перетаскивание разделителя панелей ---
-const resizer = document.getElementById('resizer');
-const editorPane = document.getElementById('editor-pane');
-const viewerPane = document.getElementById('viewer-pane');
-const container = document.getElementById('main-container');
+    // --- Перетаскивание разделителя панелей ---
+    let startX = 0;
+    let startWidth = 0;
 
-let startX = 0;
-let startWidth = 0;
+    function initResize(e) {
+        startX = e.clientX;
+        startWidth = editorPane.offsetWidth;
+        document.addEventListener('mousemove', doResize);
+        document.addEventListener('mouseup', stopResize);
+        document.body.style.cursor = 'col-resize';
+        e.preventDefault();
+    }
 
-function initResize(e) {
-    startX = e.clientX;
-    startWidth = editorPane.offsetWidth;
-    document.addEventListener('mousemove', doResize);
-    document.addEventListener('mouseup', stopResize);
-    document.body.style.cursor = 'col-resize';
-    e.preventDefault();
-}
+    function doResize(e) {
+        const dx = e.clientX - startX;
+        const newWidth = startWidth + dx;
+        const containerWidth = container.offsetWidth;
+        const minWidth = 200;
+        const maxWidth = containerWidth - minWidth - 5;
+        if (newWidth >= minWidth && newWidth <= maxWidth) {
+            editorPane.style.width = newWidth + 'px';
+            viewerPane.style.width = 'auto';
+            viewerPane.style.flex = '1';
+        }
+    }
 
-function doResize(e) {
-    const dx = e.clientX - startX;
-    const newWidth = startWidth + dx;
-    const containerWidth = container.offsetWidth;
-    const minWidth = 200;
-    const maxWidth = containerWidth - minWidth - 5; // 5px ширина разделителя
-    if (newWidth >= minWidth && newWidth <= maxWidth) {
-        editorPane.style.width = newWidth + 'px';
+    function stopResize() {
+        document.removeEventListener('mousemove', doResize);
+        document.removeEventListener('mouseup', stopResize);
+        document.body.style.cursor = '';
+    }
+
+    resizer.addEventListener('mousedown', initResize);
+
+    // --- Функции для полного скрытия/показа панелей ---
+    function showBothPanes() {
+        if (editorPane) editorPane.style.display = '';
+        if (viewerPane) viewerPane.style.display = '';
+        if (resizer) resizer.style.display = '';
+        editorPane.style.width = '';
+        editorPane.style.flex = '0 0 auto';
+        viewerPane.style.width = '';
+        viewerPane.style.flex = '1';
+        setLayout(50);
+    }
+
+    function hideEditorOnly() {
+        if (editorPane) editorPane.style.display = 'none';
+        if (resizer) resizer.style.display = 'none';
+        if (viewerPane) viewerPane.style.display = '';
+        viewerPane.style.flex = '1';
+    }
+
+    function hideViewerOnly() {
+        if (viewerPane) viewerPane.style.display = 'none';
+        if (resizer) resizer.style.display = 'none';
+        if (editorPane) editorPane.style.display = '';
+        editorPane.style.flex = '1';
+    }
+
+    function setLayout(editorWidthPercent) {
+        if (!container || !editorPane || !viewerPane) return;
+        editorPane.style.display = '';
+        viewerPane.style.display = '';
+        resizer.style.display = '';
+        const containerWidth = container.offsetWidth;
+        const resizerWidth = 5;
+        let editorWidthPx = (containerWidth * editorWidthPercent) / 100;
+        const minWidth = 200;
+        if (editorWidthPx < minWidth) editorWidthPx = minWidth;
+        const maxWidth = containerWidth - minWidth - resizerWidth;
+        if (editorWidthPx > maxWidth) editorWidthPx = maxWidth;
+        editorPane.style.width = editorWidthPx + 'px';
+        editorPane.style.flex = '0 0 auto';
         viewerPane.style.width = 'auto';
         viewerPane.style.flex = '1';
     }
-}
 
-function stopResize() {
-    document.removeEventListener('mousemove', doResize);
-    document.removeEventListener('mouseup', stopResize);
-    document.body.style.cursor = '';
-}
+    // --- Обработчики кнопок панелей ---
+    document.getElementById('btn-preview-only').addEventListener('click', hideEditorOnly);
+    document.getElementById('btn-editor-only').addEventListener('click', hideViewerOnly);
+    document.getElementById('btn-25-75').addEventListener('click', () => { showBothPanes(); setLayout(25); });
+    document.getElementById('btn-50-50').addEventListener('click', () => { showBothPanes(); setLayout(50); });
+    document.getElementById('btn-75-25').addEventListener('click', () => { showBothPanes(); setLayout(75); });
 
-resizer.addEventListener('mousedown', initResize);
+    // --- Синхронизация прокрутки ---
+    let syncScrollEnabled = true;
+    let scrollSource = null;
 
-// --- Функции для полного скрытия/показа панелей ---
-function showBothPanes() {
-    const editorPane = document.getElementById('editor-pane');
-    const viewerPane = document.getElementById('viewer-pane');
-    const resizer = document.getElementById('resizer');
-    if (editorPane) editorPane.style.display = '';
-    if (viewerPane) viewerPane.style.display = '';
-    if (resizer) resizer.style.display = '';
-    // Сбросим стили ширины, чтобы вернуться к flex-раскладке
-    editorPane.style.width = '';
-    editorPane.style.flex = '0 0 auto';
-    viewerPane.style.width = '';
-    viewerPane.style.flex = '1';
-    // Принудительно пересчитаем макет, чтобы применить дефолтные пропорции (например, 50%)
-    setLayout(50);
-}
+    function getScrollPercent(element) {
+        const scrollTop = element.scrollTop;
+        const scrollHeight = element.scrollHeight;
+        const clientHeight = element.clientHeight;
+        if (scrollHeight <= clientHeight) return 0;
+        return scrollTop / (scrollHeight - clientHeight);
+    }
 
-function hideEditorOnly() {
-    const editorPane = document.getElementById('editor-pane');
-    const resizer = document.getElementById('resizer');
-    const viewerPane = document.getElementById('viewer-pane');
-    if (editorPane) editorPane.style.display = 'none';
-    if (resizer) resizer.style.display = 'none';
-    if (viewerPane) viewerPane.style.display = '';
-    viewerPane.style.flex = '1';
-}
+    function setScrollPercent(element, percent) {
+        const scrollHeight = element.scrollHeight;
+        const clientHeight = element.clientHeight;
+        if (scrollHeight <= clientHeight) return;
+        element.scrollTop = percent * (scrollHeight - clientHeight);
+    }
 
-function hideViewerOnly() {
-    const editorPane = document.getElementById('editor-pane');
-    const resizer = document.getElementById('resizer');
-    const viewerPane = document.getElementById('viewer-pane');
-    if (viewerPane) viewerPane.style.display = 'none';
-    if (resizer) resizer.style.display = 'none';
-    if (editorPane) editorPane.style.display = '';
-    editorPane.style.flex = '1';
-}
+    function onEditorScroll() {
+        if (!syncScrollEnabled) return;
+        if (scrollSource === 'viewer') return;
+        scrollSource = 'editor';
+        const percent = getScrollPercent(editorElem);
+        setScrollPercent(viewerPaneElem, percent);
+        scrollSource = null;
+    }
 
-function setLayout(editorWidthPercent) {
-    const container = document.getElementById('main-container');
-    const editorPane = document.getElementById('editor-pane');
-    const viewerPane = document.getElementById('viewer-pane');
-    const resizer = document.getElementById('resizer');
-    
-    if (!container || !editorPane || !viewerPane) return;
-    
-    // Убедимся, что панели видимы (на случай, если были скрыты)
-    editorPane.style.display = '';
-    viewerPane.style.display = '';
-    resizer.style.display = '';
-    
-    const containerWidth = container.offsetWidth;
-    const resizerWidth = 5;
-    let editorWidthPx = (containerWidth * editorWidthPercent) / 100;
-    
-    const minWidth = 200;
-    if (editorWidthPx < minWidth) editorWidthPx = minWidth;
-    const maxWidth = containerWidth - minWidth - resizerWidth;
-    if (editorWidthPx > maxWidth) editorWidthPx = maxWidth;
-    
-    editorPane.style.width = editorWidthPx + 'px';
-    editorPane.style.flex = '0 0 auto';
-    viewerPane.style.width = 'auto';
-    viewerPane.style.flex = '1';
-}
+    function onViewerScroll() {
+        if (!syncScrollEnabled) return;
+        if (scrollSource === 'editor') return;
+        scrollSource = 'viewer';
+        const percent = getScrollPercent(viewerPaneElem);
+        setScrollPercent(editorElem, percent);
+        scrollSource = null;
+    }
 
-// --- Обработчики кнопок с новым поведением ---
-document.getElementById('btn-preview-only').addEventListener('click', hideEditorOnly);
-document.getElementById('btn-editor-only').addEventListener('click', hideViewerOnly);
-document.getElementById('btn-25-75').addEventListener('click', () => { showBothPanes(); setLayout(25); });
-document.getElementById('btn-50-50').addEventListener('click', () => { showBothPanes(); setLayout(50); });
-document.getElementById('btn-75-25').addEventListener('click', () => { showBothPanes(); setLayout(75); });
+    editorElem.addEventListener('scroll', onEditorScroll);
+    viewerPaneElem.addEventListener('scroll', onViewerScroll);
 
-// --- Синхронизация прокрутки между редактором и предпросмотром (исправлено) ---
-let syncScrollEnabled = true;   // ← включена по умолчанию
-let scrollSource = null;
-
-const editorElem = document.getElementById('editor');
-const viewerPaneElem = document.getElementById('viewer-pane'); // ← слушаем панель, а не внутренний div
-const syncBtn = document.getElementById('btn-sync-scroll');
-
-// Функции процентов (те же)
-function getScrollPercent(element) {
-    const scrollTop = element.scrollTop;
-    const scrollHeight = element.scrollHeight;
-    const clientHeight = element.clientHeight;
-    if (scrollHeight <= clientHeight) return 0;
-    return scrollTop / (scrollHeight - clientHeight);
-}
-
-function setScrollPercent(element, percent) {
-    const scrollHeight = element.scrollHeight;
-    const clientHeight = element.clientHeight;
-    if (scrollHeight <= clientHeight) return;
-    element.scrollTop = percent * (scrollHeight - clientHeight);
-}
-
-// Обработчики
-function onEditorScroll() {
-    if (!syncScrollEnabled) return;
-    if (scrollSource === 'viewer') return;
-    scrollSource = 'editor';
-    const percent = getScrollPercent(editorElem);
-    setScrollPercent(viewerPaneElem, percent);
-    scrollSource = null;
-}
-
-function onViewerScroll() {
-    if (!syncScrollEnabled) return;
-    if (scrollSource === 'editor') return;
-    scrollSource = 'viewer';
-    const percent = getScrollPercent(viewerPaneElem);
-    setScrollPercent(editorElem, percent);
-    scrollSource = null;
-}
-
-// Назначаем обработчики
-editorElem.addEventListener('scroll', onEditorScroll);
-viewerPaneElem.addEventListener('scroll', onViewerScroll);
-
-// Настройка кнопки (состояние по умолчанию – включено)
-syncBtn.style.background = '#28a745';
-syncBtn.textContent = '🔗 Синхр. (вкл)';
-
-syncBtn.addEventListener('click', () => {
-    syncScrollEnabled = !syncScrollEnabled;
-    syncBtn.style.background = syncScrollEnabled ? '#28a745' : '#6c757d';
-    syncBtn.textContent = syncScrollEnabled ? '🔗 Синхр. (вкл)' : '🔗 Синхр. прокрутку';
-});
-
+    syncBtn.style.background = '#28a745';
+    syncBtn.textContent = '🔗 Синхр. (вкл)';
+    syncBtn.addEventListener('click', () => {
+        syncScrollEnabled = !syncScrollEnabled;
+        syncBtn.style.background = syncScrollEnabled ? '#28a745' : '#6c757d';
+        syncBtn.textContent = syncScrollEnabled ? '🔗 Синхр. (вкл)' : '🔗 Синхр. прокрутку';
+    });
 </script>
+
 </body>
 </html>
