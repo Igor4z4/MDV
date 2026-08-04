@@ -1,3 +1,4 @@
+const { globalShortcut } = require('electron');
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs').promises;
@@ -55,6 +56,12 @@ if (!gotTheLock) {
             }
         }
         createWindow();
+        globalShortcut.register('CommandOrControl+Shift+I', () => {
+            if (mainWindow) mainWindow.webContents.openDevTools();
+        });
+        app.on('will-quit', () => {
+            globalShortcut.unregisterAll();
+        });
         mainWindow.setMenu(null);
         app.on('activate', () => {
             if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -84,4 +91,17 @@ ipcMain.handle('dialog:openFile', async () => {
 ipcMain.handle('read-file', async (event, filePath) => {
     const content = await fs.readFile(filePath, 'utf-8');
     return content;
+});
+
+ipcMain.handle('dialog:saveFile', async () => {
+  const { canceled, filePath } = await dialog.showSaveDialog({
+    filters: [{ name: 'Markdown', extensions: ['md'] }]
+  });
+  if (canceled) return { canceled: true };
+  return { canceled: false, filePath };
+});
+
+ipcMain.handle('write-file', async (event, filePath, content) => {
+  await fs.writeFile(filePath, content, 'utf-8');
+  return true;
 });

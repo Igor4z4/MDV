@@ -90,6 +90,9 @@
 <div id="toolbar">
     <button id="open-btn">📂 Открыть файл</button>
     <span id="file-info">Файл не выбран</span>
+    <button id="save-btn">💾 Сохранить</button>
+    <button id="save-as-btn">📄 Сохранить как</button>
+    <button id="new-btn">📄 Новый</button>
     <button id="btn-sync-scroll" style="background:#6c757d;">🔗 Синхр. прокрутку</button>
     <button id="refresh-btn" style="background:#6c757d;">🔄 Обновить</button>
     
@@ -137,7 +140,10 @@
 <script src="lib/highlight.min.js"></script>
 <script src="lib/mermaid.min.js"></script>
 
+// Освновной скрипт приложения
 <script>
+    let currentFilePath = null;   // путь к текущему открытому файлу
+
     // --- Инициализация markdown-it без плагина mermaid (будем обрабатывать отдельно) ---
     const md = window.markdownit({
         html: true,
@@ -248,6 +254,7 @@
             const res = await window.electronAPI.openFileDialog();
             if (res.canceled) return;
             editor.value = res.content;
+            currentFilePath = res.file_path;
             fileInfo.textContent = res.file_path;
             renderPreview(res.content);
             statusDiv.textContent = `Загружен: ${res.file_path}`;
@@ -315,6 +322,7 @@ def hello():
         try {
             const text = await file.text();
             editor.value = text;
+            currentFilePath = file.path || null; 
             fileInfo.textContent = file.path || file.name;
             renderPreview(text);
             statusDiv.textContent = `Перетащен: ${file.name}`;
@@ -557,6 +565,7 @@ def hello():
             try {
                 const content = await window.electronAPI.readFile(filePath);
                 editor.value = content;
+                currentFilePath = filePath;
                 fileInfo.textContent = filePath;
                 renderPreview(content);
                 statusDiv.textContent = `Загружен: ${filePath}`;
@@ -575,6 +584,42 @@ def hello():
     
     // По умолчанию открываем в режиме 100% Текст (только предпросмотр)
     hideEditorOnly();
+
+        // ---- Сохранение файлов ----
+    async function saveCurrentFile(forceSaveAs = false) {
+        let targetPath = currentFilePath;
+        if (!targetPath || forceSaveAs) {
+            const result = await window.electronAPI.saveFileDialog();
+            if (result.canceled) return false;
+            targetPath = result.filePath;
+        }
+        await window.electronAPI.writeFile(targetPath, editor.value);
+        currentFilePath = targetPath;
+        fileInfo.textContent = targetPath;
+        statusDiv.textContent = `Сохранено: ${targetPath}`;
+        return true;
+    }
+
+    // Кнопка "Сохранить"
+    document.getElementById('save-btn')?.addEventListener('click', () => saveCurrentFile(false));
+    // Кнопка "Сохранить как"
+    document.getElementById('save-as-btn')?.addEventListener('click', () => saveCurrentFile(true));
+
+    // Горячая клавиша Ctrl+S (или Cmd+S на Mac)
+    document.addEventListener('keydown', async (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+            e.preventDefault();
+            await saveCurrentFile(false);
+        }
+    });
+
+    document.getElementById('new-btn')?.addEventListener('click', () => {
+        editor.value = '';
+        currentFilePath = null;
+        fileInfo.textContent = 'Новый файл (не сохранён)';
+        renderPreview('');
+        statusDiv.textContent = 'Создан новый документ';
+    });
 
 </script>
 
