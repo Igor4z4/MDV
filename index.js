@@ -10,12 +10,14 @@ function createWindow() {
     mainWindow = new BrowserWindow({
         width: 1300,
         height: 850,
+        autoHideMenuBar: true,   // скрываем стандартное меню Electron (Alt — показать)
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
             nodeIntegration: false,
             contextIsolation: true,
         }
     });
+    mainWindow.setMenuBarVisibility(false);
     mainWindow.loadFile('web/index.html');
     
     // Если есть файл, который нужно открыть после загрузки окна
@@ -94,4 +96,33 @@ ipcMain.handle('dialog:openFile', async () => {
 ipcMain.handle('read-file', async (event, filePath) => {
     const content = await fs.readFile(filePath, 'utf-8');
     return content;
+});
+
+// IPC: сохранить содержимое в файл (Ctrl+S для файла, уже имеющего путь)
+ipcMain.handle('save-file', async (event, { filePath, content }) => {
+    try {
+        await fs.writeFile(filePath, content, 'utf-8');
+        return { ok: true };
+    } catch (err) {
+        return { ok: false, error: err.message };
+    }
+});
+
+// IPC: сохранить как — показать диалог выбора пути
+ipcMain.handle('save-file-as', async (event, { defaultPath, content }) => {
+    const { canceled, filePath } = await dialog.showSaveDialog({
+        defaultPath,
+        filters: [
+            { name: 'Markdown', extensions: ['md', 'markdown'] },
+            { name: 'Text', extensions: ['txt'] },
+            { name: 'All Files', extensions: ['*'] }
+        ]
+    });
+    if (canceled || !filePath) return { canceled: true };
+    try {
+        await fs.writeFile(filePath, content, 'utf-8');
+        return { canceled: false, file_path: filePath };
+    } catch (err) {
+        return { canceled: false, error: err.message };
+    }
 });
