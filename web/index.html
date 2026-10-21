@@ -281,12 +281,14 @@
 
     // Создать новую вкладку; опционально с файлом
     function createTab({ filePath = null, content = '' } = {}) {
-        // Если это первая вкладка — переиспользуем исходную панель #editor-pane
+        // Если исходная панель #editor-pane свободна (ни одна вкладка её не использует) —
+        // переиспользуем её. Иначе создаём отдельную панель для новой вкладки.
+        const firstPaneUsed = tabs.some(t => t.editorPaneElem === editorPane);
         let wrapper, ta;
-        if (tabs.length === 0) {
+        if (!firstPaneUsed) {
             wrapper = editorPane;
             ta = document.getElementById('editor');
-            if (ta) ta.value = content;
+            ta.value = content;
         } else {
             const id0 = tabCounter + 1;
             wrapper = document.createElement('div');
@@ -370,11 +372,11 @@
     function activateTab(id) {
         const tab = tabs.find(t => t.id === id);
         if (!tab) return;
-        // Скрыть редакторы всех остальных вкладок
-        for (const t of tabs) {
-            t.editorPaneElem.style.display = (t.id === id) ? '' : 'none';
-        }
         activeTabId = id;
+        // Показать редакторы согласно текущему режиму панелей
+        // (в режиме "только предпросмотр" все редакторы должны оставаться скрытыми,
+        //  иначе стартовая страница будет видна слева рядом с открытым документом)
+        applyPaneModeToTabs();
         fileInfo.textContent = tab.filePath || 'Безымянный документ';
         // Восстановить позицию прокрутки редактора
         tab.editorElem.scrollTop = tab.editorScrollTop || 0;
@@ -400,6 +402,7 @@
             } else {
                 tab.editorPaneElem.remove();
                 tabs.splice(idx, 1);
+                // Новая пустая вкладка переиспользует исходную панель #editor-pane
                 createTab({});
             }
             return;
@@ -651,22 +654,35 @@ def hello():
     resizer.addEventListener('mousedown', initResize);
 
     // --- Функции для полного скрытия/показа панелей ---
-    // Панели редакторов всех вкладок (включая исходную #editor-pane)
+    // Текущий режим отображения панелей: 'preview' (только текст) | 'split' (код+текст) | 'editor' (только код)
+    let paneMode = 'preview';
+
+    // Панели редакторов всех вкладок (без дубликатов, только подключённые к DOM)
     function allEditorPanes() {
-        return [editorPane, ...tabs.map(t => t.editorPaneElem)];
+        const panes = new Set(tabs.map(t => t.editorPaneElem));
+        if (!panes.has(editorPane)) panes.add(editorPane); // исходная панель может быть свободна от вкладок
+        return [...panes].filter(p => p && p.isConnected);
+    }
+
+    // Синхронизировать видимость панелей редакторов с активными вкладками
+    // (панели закрытых/пересозданных вкладок должны оставаться скрытыми)
+    function applyPaneModeToTabs() {
+        if (paneMode === 'preview') {
+            for (const pane of allEditorPanes()) pane.style.display = 'none';
+            return;
+        }
+        // В режимах split/editor показываем только панели активных вкладок
+        for (const pane of allEditorPanes()) pane.style.display = 'none';
+        const active = getActiveTab();
+        if (active) active.editorPaneElem.style.display = '';
     }
 
     function showBothPanes() {
+        paneMode = 'split';
+        applyPaneModeToTabs();
         for (const pane of allEditorPanes()) {
-            if (!pane) continue;
-            pane.style.display = '';
             pane.style.width = '';
             pane.style.flex = '0 0 auto';
-        }
-        // Скрытые вкладки не должны показываться
-        const active = getActiveTab();
-        for (const t of tabs) {
-            if (t.id !== activeTabId) t.editorPaneElem.style.display = 'none';
         }
         if (viewerPane) viewerPane.style.display = '';
         if (resizer) resizer.style.display = '';
@@ -679,8 +695,9 @@ def hello():
     }
 
     function hideEditorOnly() {
+        paneMode = 'preview';
         for (const pane of allEditorPanes()) {
-            if (pane) pane.style.display = 'none';
+            pane.style.display = 'none';
         }
         if (resizer) resizer.style.display = 'none';
         if (viewerPane) viewerPane.style.display = '';
@@ -693,19 +710,12 @@ def hello():
     }
 
     function hideViewerOnly() {
+        paneMode = 'editor';
         if (viewerPane) viewerPane.style.display = 'none';
         if (resizer) resizer.style.display = 'none';
-        for (const pane of allEditorPanes()) {
-            if (pane) pane.style.display = '';
-        }
+        applyPaneModeToTabs();
         const active = getActiveTab();
-        for (const t of tabs) {
-            if (t.id !== activeTabId) t.editorPaneElem.style.display = 'none';
-        }
-        editorPane.style.flex = '1';
-        for (const t of tabs) {
-            if (t.id === activeTabId) t.editorPaneElem.style.flex = '1';
-        }
+        if (active) active.editorPaneElem.style.flex = '1';
         // Ресайзеры не видны (панель просмотра скрыта)
         if (leftResizer) leftResizer.style.display = 'none';
         if (rightResizer) rightResizer.style.display = 'none';
@@ -713,7 +723,6 @@ def hello():
 
     function setLayout(editorWidthPercent) {
         if (!container || !editorPane || !viewerPane) return;
-        editorPane.style.display = '';
         viewerPane.style.display = '';
         resizer.style.display = '';
         const containerWidth = container.offsetWidth;
@@ -725,7 +734,6 @@ def hello():
         if (editorWidthPx > maxWidth) editorWidthPx = maxWidth;
         // Применить ширину ко всем видимым панелям редакторов
         for (const pane of allEditorPanes()) {
-            if (!pane) continue;
             pane.style.width = editorWidthPx + 'px';
             pane.style.flex = '0 0 auto';
         }
