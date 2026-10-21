@@ -1,12 +1,2 @@
-# Зависимости node.js
-node_modules/
-
-# Папки со сборкой приложения
-dist/
-release/
-build/
-out/
-
-# Системные файлы
-.DS_Store
-Thumbs.db
+__pycache__/
+*.pyc
