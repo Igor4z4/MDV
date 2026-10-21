@@ -83,12 +83,85 @@
         }
         .margin-resizer:hover {
             background-color: #4a6fa5;
-        }        
+        }
+
+        /* --- Панель вкладок (как в браузере) --- */
+        #tab-bar {
+            display: flex;
+            align-items: stretch;
+            background: var(--toolbar);
+            border-bottom: 1px solid var(--border);
+            overflow-x: auto;
+            overflow-y: hidden;
+            min-height: 36px;
+            scrollbar-width: thin;
+        }
+        #tabs {
+            display: flex;
+            align-items: stretch;
+        }
+        .tab {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            max-width: 240px;
+            min-width: 120px;
+            padding: 7px 10px 7px 14px;
+            border-right: 1px solid var(--border);
+            background: var(--bg);
+            color: var(--text);
+            cursor: pointer;
+            font-size: 13px;
+            white-space: nowrap;
+            user-select: none;
+            border-top: 2px solid transparent;
+        }
+        .tab:hover { filter: brightness(0.97); }
+        [data-theme="dark"] .tab:hover { filter: brightness(1.15); }
+        .tab.active {
+            background: var(--viewer-bg);
+            border-top: 2px solid #4a6fa5;
+            font-weight: 600;
+        }
+        .tab-title {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            flex: 1;
+        }
+        .tab-close {
+            border: none;
+            background: transparent;
+            color: inherit;
+            padding: 0 4px;
+            margin: 0;
+            border-radius: 4px;
+            font-size: 14px;
+            line-height: 1;
+            cursor: pointer;
+            flex: 0 0 auto;
+        }
+        .tab-close:hover { background: rgba(220, 53, 69, .85); color: #fff; }
+        #new-tab-btn {
+            border: none;
+            border-right: 1px solid var(--border);
+            border-radius: 0;
+            background: transparent;
+            color: var(--text);
+            font-size: 18px;
+            padding: 0 12px;
+            cursor: pointer;
+            flex: 0 0 auto;
+        }
+        #new-tab-btn:hover { background: var(--border); }
     </style>
 </head>
 <body>
+<div id="tab-bar">
+    <div id="tabs"></div>
+    <button id="new-tab-btn" title="Новая вкладка (Ctrl+T)">＋</button>
+</div>
 <div id="toolbar">
-    <button id="open-btn">📂 Открыть файл</button>
+    <button id="open-btn">📂 Открыть файл(ы)</button>
     <span id="file-info">Файл не выбран</span>
     <button id="btn-sync-scroll" style="background:#6c757d;">🔗 Синхр. прокрутку</button>
     <button id="refresh-btn" style="background:#6c757d;">🔄 Обновить</button>
@@ -174,7 +247,6 @@
     }
 
     // --- DOM элементы (объявляем все в начале) ---
-    const editor = document.getElementById('editor');
     const viewerDiv = document.getElementById('viewer');
     const fileInfo = document.getElementById('file-info');
     const openBtn = document.getElementById('open-btn');
@@ -182,12 +254,220 @@
     const statusDiv = document.getElementById('status');
     const themeSelector = document.getElementById('theme-selector');
     const syncBtn = document.getElementById('btn-sync-scroll');
-    const editorElem = document.getElementById('editor');
     const viewerPaneElem = document.getElementById('viewer-scroll');
     const resizer = document.getElementById('resizer');
     const editorPane = document.getElementById('editor-pane');
     const viewerPane = document.getElementById('viewer-pane');
     const container = document.getElementById('main-container');
+
+    // --- Система вкладок (несколько документов одновременно, как в браузере) ---
+    const tabsBar = document.getElementById('tabs');
+    const newTabBtn = document.getElementById('new-tab-btn');
+    const tabs = [];          // список вкладок
+    let activeTabId = null;   // id активной вкладки
+    let tabCounter = 0;       // счётчик для имён "Без имени N"
+
+    // Текущая активная вкладка (или null)
+    function getActiveTab() {
+        return tabs.find(t => t.id === activeTabId) || null;
+    }
+
+    // Короткое имя файла для заголовка вкладки
+    function tabDisplayName(filePath) {
+        if (!filePath) return 'Без имени';
+        const name = String(filePath).split(/[\\/]/).pop();
+        return name || 'Без имени';
+    }
+
+    // Создать новую вкладку; опционально с файлом
+    function createTab({ filePath = null, content = '' } = {}) {
+        // Если это первая вкладка — переиспользуем исходную панель #editor-pane
+        let wrapper, ta;
+        if (tabs.length === 0) {
+            wrapper = editorPane;
+            ta = document.getElementById('editor');
+            if (ta) ta.value = content;
+        } else {
+            const id0 = tabCounter + 1;
+            wrapper = document.createElement('div');
+            wrapper.className = 'pane';
+            wrapper.id = 'editor-pane-' + id0;
+            wrapper.style.cssText = 'padding:24px; flex:0 0 auto; width:50%; min-width:200px; border-right:1px solid var(--border); overflow:hidden;';
+
+            ta = document.createElement('textarea');
+            ta.className = 'editor';
+            ta.placeholder = 'Введите Markdown... Поддерживаются таблицы, чек-листы, формулы, диаграммы Mermaid, подсветка кода';
+            ta.value = content;
+            ta.style.cssText = "width:100%; height:100%; border:none; resize:none; font-family:'SF Mono', monospace; font-size:14px; line-height:1.6; background:var(--editor-bg); color:var(--text); outline:none;";
+            wrapper.appendChild(ta);
+
+            // Вставляем перед разделителем панелей — каждая вкладка имеет свой редактор
+            container.insertBefore(wrapper, resizer);
+        }
+        const id = ++tabCounter;
+
+        // Обновление предпросмотра при вводе (только если вкладка активна)
+        ta.addEventListener('input', () => {
+            const tab = tabs.find(t => t.id === id);
+            if (tab) tab.content = ta.value;
+            if (activeTabId === id) renderPreview(ta.value);
+        });
+
+        // Запоминание позиции прокрутки редактора
+        ta.addEventListener('scroll', () => {
+            const tab = tabs.find(t => t.id === id);
+            if (tab) tab.editorScrollTop = ta.scrollTop;
+        });
+
+        // Синхронизация прокрутки с предпросмотром (если функция уже определена)
+        if (typeof attachScrollSync === 'function') attachScrollSync(ta);
+
+        const tab = { id, filePath, content, editorElem: ta, editorPaneElem: wrapper, editorScrollTop: 0 };
+        tabs.push(tab);
+        renderTabBar();
+        activateTab(id);
+        return tab;
+    }
+
+    // Построение панели вкладок
+    function renderTabBar() {
+        tabsBar.innerHTML = '';
+        for (const tab of tabs) {
+            const el = document.createElement('div');
+            el.className = 'tab' + (tab.id === activeTabId ? ' active' : '');
+            el.title = tab.filePath || 'Безымянный документ';
+
+            const title = document.createElement('span');
+            title.className = 'tab-title';
+            title.textContent = tab.filePath ? tabDisplayName(tab.filePath) : tabDisplayName(tab.content);
+            if (!tab.filePath) {
+                // Для безымянного документа показываем первую строку текста
+                const firstLine = (tab.content.split('\n').find(l => l.trim()) || '').trim();
+                title.textContent = firstLine ? firstLine.slice(0, 30) : 'Без имени ' + tab.id;
+            }
+
+            const closeBtn = document.createElement('button');
+            closeBtn.className = 'tab-close';
+            closeBtn.textContent = '×';
+            closeBtn.title = 'Закрыть вкладку';
+            closeBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                closeTab(tab.id);
+            });
+
+            el.appendChild(title);
+            el.appendChild(closeBtn);
+            el.addEventListener('click', () => activateTab(tab.id));
+            el.addEventListener('mousedown', (e) => {
+                // Среднее нажатие — закрыть вкладку (как в браузере)
+                if (e.button === 1) { e.preventDefault(); closeTab(tab.id); }
+            });
+            tabsBar.appendChild(el);
+        }
+    }
+
+    // Переключение активной вкладки
+    function activateTab(id) {
+        const tab = tabs.find(t => t.id === id);
+        if (!tab) return;
+        // Скрыть редакторы всех остальных вкладок
+        for (const t of tabs) {
+            t.editorPaneElem.style.display = (t.id === id) ? '' : 'none';
+        }
+        activeTabId = id;
+        fileInfo.textContent = tab.filePath || 'Безымянный документ';
+        // Восстановить позицию прокрутки редактора
+        tab.editorElem.scrollTop = tab.editorScrollTop || 0;
+        renderPreview(tab.content);
+        renderTabBar();
+        statusDiv.textContent = tab.filePath ? `Активна вкладка: ${tab.filePath}` : 'Активна вкладка: безымянный документ';
+    }
+
+    // Закрытие вкладки
+    function closeTab(id) {
+        const idx = tabs.findIndex(t => t.id === id);
+        if (idx === -1) return;
+        const tab = tabs[idx];
+        const isActive = (id === activeTabId);
+
+        // Если последняя вкладка закрывается — создаём новую пустую
+        if (tabs.length === 1) {
+            if (tab.editorPaneElem === editorPane) {
+                // Исходную панель #editor-pane не удаляем, просто очищаем редактор
+                tab.editorElem.value = '';
+                tabs.splice(idx, 1);
+                createTab({});
+            } else {
+                tab.editorPaneElem.remove();
+                tabs.splice(idx, 1);
+                createTab({});
+            }
+            return;
+        }
+
+        if (tab.editorPaneElem !== editorPane) {
+            tab.editorPaneElem.remove();
+        }
+        tabs.splice(idx, 1);
+
+        if (isActive) {
+            const next = tabs[Math.min(idx, tabs.length - 1)];
+            activateTab(next.id);
+        } else {
+            renderTabBar();
+        }
+    }
+
+    // Открыть файл(ы) в новой(ых) вкладке(ах); если текущая вкладка пуста и без файла — переиспользуем её
+    async function openFiles(files) {
+        let firstHandled = false;
+        for (const f of files) {
+            const active = getActiveTab();
+            if (!firstHandled && active && !active.filePath && !active.content.trim()) {
+                // Переиспользуем пустую активную вкладку
+                active.filePath = f.file_path;
+                active.content = f.content;
+                active.editorElem.value = f.content;
+                firstHandled = true;
+                activateTab(active.id);
+            } else {
+                createTab({ filePath: f.file_path, content: f.content });
+                firstHandled = true;
+            }
+        }
+    }
+
+    newTabBtn.addEventListener('click', () => createTab({}));
+
+    // Горячие клавиши: Ctrl+T — новая вкладка, Ctrl+W — закрыть вкладку,
+    // Ctrl+Tab / Ctrl+1..8 — переключение вкладок
+    document.addEventListener('keydown', (e) => {
+        if (!(e.ctrlKey || e.metaKey)) return;
+        const key = e.key.toLowerCase();
+        if (key === 't') {
+            e.preventDefault();
+            createTab({});
+        } else if (key === 'w') {
+            e.preventDefault();
+            if (activeTabId !== null) closeTab(activeTabId);
+        } else if (e.key === 'Tab' && e.shiftKey) {
+            e.preventDefault();
+            const idx = tabs.findIndex(t => t.id === activeTabId);
+            const next = tabs[(idx + 1) % tabs.length];
+            if (next) activateTab(next.id);
+        } else if (e.key === 'Tab') {
+            e.preventDefault();
+            const idx = tabs.findIndex(t => t.id === activeTabId);
+            const prev = tabs[(idx - 1 + tabs.length) % tabs.length];
+            if (prev) activateTab(prev.id);
+        } else if (/^[1-8]$/.test(e.key)) {
+            const target = tabs[parseInt(e.key, 10) - 1];
+            if (target) { e.preventDefault(); activateTab(target.id); }
+        } else if (e.key === '9') {
+            const last = tabs[tabs.length - 1];
+            if (last) { e.preventDefault(); activateTab(last.id); }
+        }
+    });
 
     // --- Тема ---
     const htmlEl = document.documentElement;
@@ -240,23 +520,27 @@
     }
 
     // --- Обработчики ---
-    editor.addEventListener('input', () => renderPreview(editor.value));
+    // Ввод обрабатывается на уровне каждой вкладки (см. createTab)
 
-    // НОВЫЙ обработчик открытия файла (без eel)
+    // Открытие файла(ов) через диалог — каждый файл открывается во вкладке
     openBtn.addEventListener('click', async () => {
         try {
             const res = await window.electronAPI.openFileDialog();
             if (res.canceled) return;
-            editor.value = res.content;
-            fileInfo.textContent = res.file_path;
-            renderPreview(res.content);
-            statusDiv.textContent = `Загружен: ${res.file_path}`;
+            const files = res.files || [{ file_path: res.file_path, content: res.content }];
+            await openFiles(files);
+            statusDiv.textContent = files.length > 1
+                ? `Загружено файлов: ${files.length}`
+                : `Загружен: ${files[0].file_path}`;
         } catch (e) {
             alert('Ошибка: ' + e.message);
         }
     });
 
-    refreshBtn.addEventListener('click', () => renderPreview(editor.value));
+    refreshBtn.addEventListener('click', () => {
+        const tab = getActiveTab();
+        if (tab) renderPreview(tab.editorElem.value);
+    });
 
     // --- Пример при загрузке ---
     window.addEventListener('load', () => {
@@ -300,36 +584,44 @@ def hello():
     print("Hello, world!")
 \`\`\`
 `;
-        editor.value = sample;
-        renderPreview(sample);
-        statusDiv.textContent = 'Готов к работе. Перетащите файл или откройте через кнопку.';
+        createTab({ content: sample });
+        statusDiv.textContent = 'Готов к работе. Перетащите файл(ы) или откройте через кнопку (можно выбрать несколько файлов).';
     });
 
-    // --- Drag & drop ---
+    // --- Drag & drop (несколько файлов — каждая в своей вкладке) ---
     document.addEventListener('dragover', e => e.preventDefault());
     document.addEventListener('drop', async e => {
         e.preventDefault();
-        const files = e.dataTransfer.files;
+        const files = Array.from(e.dataTransfer.files);
         if (files.length === 0) return;
-        const file = files[0];
         try {
-            const text = await file.text();
-            editor.value = text;
-            fileInfo.textContent = file.path || file.name;
-            renderPreview(text);
-            statusDiv.textContent = `Перетащен: ${file.name}`;
+            const loaded = [];
+            for (const file of files) {
+                const text = await file.text();
+                loaded.push({ file_path: file.path || file.name, content: text });
+            }
+            await openFiles(loaded);
+            statusDiv.textContent = loaded.length > 1
+                ? `Перетащено файлов: ${loaded.length}`
+                : `Перетащен: ${loaded[0].file_path}`;
         } catch (err) {
             alert('Ошибка чтения: ' + err.message);
         }
     });
 
-    // --- Перетаскивание разделителя панелей ---
+    // --- Перетаскивание разделителя панелей (работает с редактором активной вкладки) ---
     let startX = 0;
     let startWidth = 0;
 
+    function getActiveEditorPane() {
+        const tab = getActiveTab();
+        return tab ? tab.editorPaneElem : editorPane;
+    }
+
     function initResize(e) {
         startX = e.clientX;
-        startWidth = editorPane.offsetWidth;
+        const pane = getActiveEditorPane();
+        startWidth = pane.offsetWidth;
         document.addEventListener('mousemove', doResize);
         document.addEventListener('mouseup', stopResize);
         document.body.style.cursor = 'col-resize';
@@ -343,7 +635,8 @@ def hello():
         const minWidth = 200;
         const maxWidth = containerWidth - minWidth - 5;
         if (newWidth >= minWidth && newWidth <= maxWidth) {
-            editorPane.style.width = newWidth + 'px';
+            const pane = getActiveEditorPane();
+            pane.style.width = newWidth + 'px';
             viewerPane.style.width = 'auto';
             viewerPane.style.flex = '1';
         }
@@ -358,12 +651,25 @@ def hello():
     resizer.addEventListener('mousedown', initResize);
 
     // --- Функции для полного скрытия/показа панелей ---
+    // Панели редакторов всех вкладок (включая исходную #editor-pane)
+    function allEditorPanes() {
+        return [editorPane, ...tabs.map(t => t.editorPaneElem)];
+    }
+
     function showBothPanes() {
-        if (editorPane) editorPane.style.display = '';
+        for (const pane of allEditorPanes()) {
+            if (!pane) continue;
+            pane.style.display = '';
+            pane.style.width = '';
+            pane.style.flex = '0 0 auto';
+        }
+        // Скрытые вкладки не должны показываться
+        const active = getActiveTab();
+        for (const t of tabs) {
+            if (t.id !== activeTabId) t.editorPaneElem.style.display = 'none';
+        }
         if (viewerPane) viewerPane.style.display = '';
         if (resizer) resizer.style.display = '';
-        editorPane.style.width = '';
-        editorPane.style.flex = '0 0 auto';
         viewerPane.style.width = '';
         viewerPane.style.flex = '1';
         setLayout(50);
@@ -373,7 +679,9 @@ def hello():
     }
 
     function hideEditorOnly() {
-        if (editorPane) editorPane.style.display = 'none';
+        for (const pane of allEditorPanes()) {
+            if (pane) pane.style.display = 'none';
+        }
         if (resizer) resizer.style.display = 'none';
         if (viewerPane) viewerPane.style.display = '';
         viewerPane.style.flex = '1';
@@ -387,8 +695,17 @@ def hello():
     function hideViewerOnly() {
         if (viewerPane) viewerPane.style.display = 'none';
         if (resizer) resizer.style.display = 'none';
-        if (editorPane) editorPane.style.display = '';
+        for (const pane of allEditorPanes()) {
+            if (pane) pane.style.display = '';
+        }
+        const active = getActiveTab();
+        for (const t of tabs) {
+            if (t.id !== activeTabId) t.editorPaneElem.style.display = 'none';
+        }
         editorPane.style.flex = '1';
+        for (const t of tabs) {
+            if (t.id === activeTabId) t.editorPaneElem.style.flex = '1';
+        }
         // Ресайзеры не видны (панель просмотра скрыта)
         if (leftResizer) leftResizer.style.display = 'none';
         if (rightResizer) rightResizer.style.display = 'none';
@@ -406,8 +723,12 @@ def hello():
         if (editorWidthPx < minWidth) editorWidthPx = minWidth;
         const maxWidth = containerWidth - minWidth - resizerWidth;
         if (editorWidthPx > maxWidth) editorWidthPx = maxWidth;
-        editorPane.style.width = editorWidthPx + 'px';
-        editorPane.style.flex = '0 0 auto';
+        // Применить ширину ко всем видимым панелям редакторов
+        for (const pane of allEditorPanes()) {
+            if (!pane) continue;
+            pane.style.width = editorWidthPx + 'px';
+            pane.style.flex = '0 0 auto';
+        }
         viewerPane.style.width = 'auto';
         viewerPane.style.flex = '1';
     }
@@ -441,8 +762,10 @@ def hello():
     function onEditorScroll() {
         if (!syncScrollEnabled) return;
         if (scrollSource === 'viewer') return;
+        const tab = getActiveTab();
+        if (!tab) return;
         scrollSource = 'editor';
-        const percent = getScrollPercent(editorElem);
+        const percent = getScrollPercent(tab.editorElem);
         setScrollPercent(viewerPaneElem, percent);
         scrollSource = null;
     }
@@ -450,13 +773,18 @@ def hello():
     function onViewerScroll() {
         if (!syncScrollEnabled) return;
         if (scrollSource === 'editor') return;
+        const tab = getActiveTab();
+        if (!tab) return;
         scrollSource = 'viewer';
         const percent = getScrollPercent(viewerPaneElem);
-        setScrollPercent(editorElem, percent);
+        setScrollPercent(tab.editorElem, percent);
         scrollSource = null;
     }
 
-    editorElem.addEventListener('scroll', onEditorScroll);
+    // Синхронизация прокрутки для всех редакторов вкладок
+    function attachScrollSync(ta) {
+        ta.addEventListener('scroll', onEditorScroll);
+    }
     viewerPaneElem.addEventListener('scroll', onViewerScroll);
 
     syncBtn.style.background = '#28a745';
@@ -551,14 +879,19 @@ def hello():
         rightResizer.addEventListener('mousedown', (e) => initSymResize(e, false));
     }
 
-    // --- Открытие файла из аргументов командной строки (двойной клик по .md) ---
+    // --- Открытие файла из аргументов командной строки (двойной клик по .md) — в новой вкладке ---
     if (window.electronAPI.onOpenFile) {
         window.electronAPI.onOpenFile(async (filePath) => {
             try {
                 const content = await window.electronAPI.readFile(filePath);
-                editor.value = content;
-                fileInfo.textContent = filePath;
-                renderPreview(content);
+                // Если такой файл уже открыт — переключаемся на его вкладку
+                const existing = tabs.find(t => t.filePath === filePath);
+                if (existing) {
+                    activateTab(existing.id);
+                    statusDiv.textContent = `Вкладка уже была открыта: ${filePath}`;
+                    return;
+                }
+                await openFiles([{ file_path: filePath, content }]);
                 statusDiv.textContent = `Загружен: ${filePath}`;
             } catch (err) {
                 console.error('Ошибка открытия файла:', err);

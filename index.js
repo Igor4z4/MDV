@@ -65,18 +65,29 @@ app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit();
 });
 
-// IPC: открыть файл через диалог (кнопка "Открыть файл")
+// IPC: открыть файл через диалог (кнопка "Открыть файл").
+// Поддерживается выбор сразу нескольких файлов — каждый откроется в новой вкладке.
 ipcMain.handle('dialog:openFile', async () => {
     const { canceled, filePaths } = await dialog.showOpenDialog({
-        properties: ['openFile'],
+        properties: ['openFile', 'multiSelections'],
         filters: [
             { name: 'Markdown', extensions: ['md', 'markdown', 'txt'] },
             { name: 'All Files', extensions: ['*'] }
         ]
     });
-    if (canceled) return { canceled: true };
-    const content = await fs.readFile(filePaths[0], 'utf-8');
-    return { canceled: false, file_path: filePaths[0], content };
+    if (canceled || filePaths.length === 0) return { canceled: true };
+    const files = [];
+    for (const p of filePaths) {
+        try {
+            const content = await fs.readFile(p, 'utf-8');
+            files.push({ file_path: p, content });
+        } catch (err) {
+            console.error('Ошибка чтения файла:', p, err);
+        }
+    }
+    if (files.length === 0) return { canceled: true };
+    // Обратная совместимость: file_path/content указывают на первый файл
+    return { canceled: false, file_path: files[0].file_path, content: files[0].content, files };
 });
 
 // IPC: читать файл по пути (для открытия из аргументов командной строки)
