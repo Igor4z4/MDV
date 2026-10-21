@@ -10,12 +10,14 @@ function createWindow() {
     mainWindow = new BrowserWindow({
         width: 1300,
         height: 850,
+        autoHideMenuBar: true,   // скрываем стандартное меню Electron (Alt — показать)
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
             nodeIntegration: false,
             contextIsolation: true,
         }
     });
+    mainWindow.setMenuBarVisibility(false);
     mainWindow.loadFile('web/index.html');
     
     // Если есть файл, который нужно открыть после загрузки окна
@@ -65,22 +67,62 @@ app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit();
 });
 
-// IPC: открыть файл через диалог (кнопка "Открыть файл")
+// IPC: открыть файл через диалог (кнопка "Открыть файл").
+// Поддерживается выбор сразу нескольких файлов — каждый откроется в новой вкладке.
 ipcMain.handle('dialog:openFile', async () => {
     const { canceled, filePaths } = await dialog.showOpenDialog({
-        properties: ['openFile'],
+        properties: ['openFile', 'multiSelections'],
         filters: [
             { name: 'Markdown', extensions: ['md', 'markdown', 'txt'] },
             { name: 'All Files', extensions: ['*'] }
         ]
     });
-    if (canceled) return { canceled: true };
-    const content = await fs.readFile(filePaths[0], 'utf-8');
-    return { canceled: false, file_path: filePaths[0], content };
+    if (canceled || filePaths.length === 0) return { canceled: true };
+    const files = [];
+    for (const p of filePaths) {
+        try {
+            const content = await fs.readFile(p, 'utf-8');
+            files.push({ file_path: p, content });
+        } catch (err) {
+            console.error('Ошибка чтения файла:', p, err);
+        }
+    }
+    if (files.length === 0) return { canceled: true };
+    // Обратная совместимость: file_path/content указывают на первый файл
+    return { canceled: false, file_path: files[0].file_path, content: files[0].content, files };
 });
 
 // IPC: читать файл по пути (для открытия из аргументов командной строки)
 ipcMain.handle('read-file', async (event, filePath) => {
     const content = await fs.readFile(filePath, 'utf-8');
     return content;
+});
+
+// IPC: сохранить содержимое в файл (Ctrl+S для файла, уже имеющего путь)
+ipcMain.handle('save-file', async (event, { filePath, content }) => {
+    try {
+        await fs.writeFile(filePath, content, 'utf-8');
+        return { ok: true };
+    } catch (err) {
+        return { ok: false, error: err.message };
+    }
+});
+
+// IPC: сохранить как — показать диалог выбора пути
+ipcMain.handle('save-file-as', async (event, { defaultPath, content }) => {
+    const { canceled, filePath } = await dialog.showSaveDialog({
+        defaultPath,
+        filters: [
+            { name: 'Markdown', extensions: ['md', 'markdown'] },
+            { name: 'Text', extensions: ['txt'] },
+            { name: 'All Files', extensions: ['*'] }
+        ]
+    });
+    if (canceled || !filePath) return { canceled: true };
+    try {
+        await fs.writeFile(filePath, content, 'utf-8');
+        return { canceled: false, file_path: filePath };
+    } catch (err) {
+        return { canceled: false, error: err.message };
+    }
 });
