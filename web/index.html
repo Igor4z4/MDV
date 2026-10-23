@@ -185,6 +185,19 @@
             flex: 0 0 auto;
         }
         #new-tab-btn:hover { background: var(--border); }
+
+        /* --- Расположение панели вкладок: сверху / снизу (настраивается на вкладке «Вид») --- */
+        body { display: flex; flex-direction: column; }
+        body.tabs-bottom #tab-bar { order: 10; border-bottom: none; border-top: 1px solid var(--border); }
+        body.tabs-bottom #status { order: 11; }
+        .tab.active {
+            border-top: 2px solid transparent;
+            border-bottom: 2px solid #4a6fa5;
+        }
+        body.tabs-bottom .tab.active {
+            border-bottom: 2px solid transparent;
+            border-top: 2px solid #4a6fa5;
+        }
     </style>
 </head>
 <body>
@@ -215,6 +228,10 @@
         </div>
         <div class="ribbon-group">
             <button class="ribbon-btn toggle-on" id="btn-sync-scroll" title="Синхронизация прокрутки редактора и просмотра"><span class="icon">🔗</span><span id="sync-label">Синхр. (вкл)</span></button>
+        </div>
+        <div class="ribbon-group">
+            <button class="ribbon-btn" id="btn-tabs-top" title="Панель вкладок над документом"><span class="icon">🔝</span>Вкладки сверху</button>
+            <button class="ribbon-btn" id="btn-tabs-bottom" title="Панель вкладок под документом"><span class="icon">🔽</span>Вкладки снизу</button>
         </div>
         <select id="theme-selector">
             <option value="light">☀️ Светлая</option>
@@ -967,6 +984,20 @@ def hello():
         syncScrollEnabled = !syncScrollEnabled;
         updateSyncBtn();
     });
+
+    // --- Расположение панели вкладок: сверху / снизу (настройка сохраняется) ---
+    const btnTabsTop = document.getElementById('btn-tabs-top');
+    const btnTabsBottom = document.getElementById('btn-tabs-bottom');
+    function setTabsPosition(pos) {
+        const bottom = (pos === 'bottom');
+        document.body.classList.toggle('tabs-bottom', bottom);
+        localStorage.setItem('md_tabs_position', bottom ? 'bottom' : 'top');
+        btnTabsTop.classList.toggle('toggle-on', !bottom);
+        btnTabsBottom.classList.toggle('toggle-on', bottom);
+    }
+    btnTabsTop.addEventListener('click', () => setTabsPosition('top'));
+    btnTabsBottom.addEventListener('click', () => setTabsPosition('bottom'));
+    setTabsPosition(localStorage.getItem('md_tabs_position') === 'bottom' ? 'bottom' : 'top');
 
     // --- Ресайзеры левого и правого отступов (симметричные) ---
     const leftResizer = document.getElementById('left-margin-resizer');
