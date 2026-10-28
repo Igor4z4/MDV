@@ -18,7 +18,8 @@ function createWindow() {
         }
     });
     mainWindow.setMenuBarVisibility(false);
-    mainWindow.loadFile('web/index.html');
+    // Абсолютный путь — чтобы загрузка index.html не зависела от текущего каталога
+    mainWindow.loadFile(path.join(__dirname, 'web', 'index.html'));
     
     // Если есть файл, который нужно открыть после загрузки окна
     if (pendingFilePath) {
