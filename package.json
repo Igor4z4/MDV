@@ -3,10 +3,11 @@
   "version": "1.0.1",
   "description": "Markdown Viewer Pro",
   "main": "index.js",
+  "author": "Igor4",
   "scripts": {
     "start": "electron .",
     "install-electron": "node node_modules/electron/install.js",
-    "dist": "electron-builder"
+    "dist": "electron-builder --win --x64"
   },
   "devDependencies": {
     "electron": "^42.3.3",
@@ -15,23 +16,18 @@
   "build": {
     "appId": "com.igor4z4.mdv",
     "productName": "MDV Markdown Viewer",
+    "electronDist": "node_modules/electron/dist",
     "directories": {
       "output": "dist"
     },
     "files": [
       "index.js",
       "preload.js",
-      "package.json",
-      "web/**/*",
-      "!node_modules/.bin"
+      "web/**/*"
     ],
     "win": {
-      "target": "nsis",
-      "icon": "web/favicon.ico"
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "target": "dir",
+      "signAndEditExecutable": false
     }
   }
 }
