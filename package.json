@@ -5,11 +5,13 @@
   "main": "index.js",
   "author": "Igor4",
   "scripts": {
-    "start": "electron .",
-    "install-electron": "node node_modules/electron/install.js",
-    "dist": "electron-builder --win --x64"
-  },
+  "start": "electron .",
+  "setup": "node setup.js",
+  "dist": "cross-env ELECTRON_BUILDER_CACHE=./.cache/builder ELECTRON_CACHE=./.cache/electron electron-builder --win portable --x64",
+  "dist:arm": "cross-env ELECTRON_BUILDER_CACHE=./.cache/builder ELECTRON_CACHE=./.cache/electron electron-builder --win portable --arm64"
+},
   "devDependencies": {
+    "cross-env": "^10.1.0",
     "electron": "^42.3.3",
     "electron-builder": "^26.15.0"
   },
@@ -21,13 +23,25 @@
       "output": "dist"
     },
     "files": [
+      "package.json",
       "index.js",
       "preload.js",
       "web/**/*"
     ],
     "win": {
-      "target": "dir",
-      "signAndEditExecutable": false
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "web/favicon.ico",
+      "signExecutable": false
+    },
+    "portable": {
+      "artifactName": "MDV-Markdown-Viewer-${version}-portable.${ext}"
     }
   }
 }
