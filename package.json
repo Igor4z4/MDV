@@ -5,11 +5,11 @@
   "main": "index.js",
   "author": "Igor4",
   "scripts": {
-  "start": "electron .",
-  "setup": "node setup.js",
-  "dist": "cross-env ELECTRON_BUILDER_CACHE=./.cache/builder ELECTRON_CACHE=./.cache/electron electron-builder --win portable --x64",
-  "dist:arm": "cross-env ELECTRON_BUILDER_CACHE=./.cache/builder ELECTRON_CACHE=./.cache/electron electron-builder --win portable --arm64"
-},
+    "start": "electron .",
+    "setup": "node setup.js",
+    "dist": "cross-env ELECTRON_BUILDER_CACHE=./.cache/builder ELECTRON_CACHE=./.cache/electron electron-builder --win nsis portable --x64",
+    "dist:arm": "cross-env ELECTRON_BUILDER_CACHE=./.cache/builder ELECTRON_CACHE=./.cache/electron electron-builder --win nsis portable --arm64"
+  },
   "devDependencies": {
     "cross-env": "^10.1.0",
     "electron": "^42.3.3",
@@ -30,15 +30,21 @@
     ],
     "win": {
       "target": [
-        {
-          "target": "portable",
-          "arch": [
-            "x64"
-          ]
-        }
+        { "target": "nsis" },
+        { "target": "portable" }
       ],
       "icon": "web/favicon.ico",
       "signExecutable": false
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "MDV Markdown Viewer",
+      "uninstallDisplayName": "MDV Markdown Viewer",
+      "artifactName": "MDV-Markdown-Viewer-${version}-setup.${ext}",
+      "deleteAppDataOnUninstall": false
     },
     "portable": {
       "artifactName": "MDV-Markdown-Viewer-${version}-portable.${ext}"
