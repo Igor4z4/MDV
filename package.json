@@ -30,8 +30,12 @@
     ],
     "win": {
       "target": [
-        { "target": "nsis" },
-        { "target": "portable" }
+        {
+          "target": "nsis"
+        },
+        {
+          "target": "portable"
+        }
       ],
       "icon": "web/favicon.ico",
       "signExecutable": false
@@ -49,5 +53,8 @@
     "portable": {
       "artifactName": "MDV-Markdown-Viewer-${version}-portable.${ext}"
     }
+  },
+  "dependencies": {
+    "docx": "^8.5.0"
   }
 }
