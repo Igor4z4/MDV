@@ -3,7 +3,7 @@
   "version": "1.0.1",
   "description": "Markdown Viewer Pro",
   "main": "index.js",
-  "author": "Igor4",
+  "author": "Igor4z4",
   "scripts": {
     "start": "electron .",
     "setup": "node setup.js",
