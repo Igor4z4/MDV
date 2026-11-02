@@ -133,6 +133,8 @@ const SYMBOLS = {
 };
 
 const BIG_OPERATORS = { sum: '∑', prod: '∏', int: '∫', oint: '∮', iint: '∬', iiint: '∭', bigcup: '⋃', bigcap: '⋂', lim: 'lim' };
+// Варианты с пределами сбоку: \sum nolimits, textstyle sum и т.п.
+const NOLIMITS_OPS = new Set(['sum', 'prod', 'int', 'oint', 'iint', 'iiint', 'bigcup', 'bigcap', 'lim']);
 
 // Акценты (\hat{x}, \vec{a} ...) → символ акцента Word
 const ACCENTS = {
@@ -195,19 +197,23 @@ class Parser {
 
     parseGroup(stopAtBrace) {
         const children = [];
-        let braceDepth = 0;
         while (this.i < this.s.length) {
             const c = this.peekChar();
             if (c === null) break; // остались только пробелы
             if (c === '}') {
-                if (stopAtBrace && braceDepth === 0) break; // конец нашей группы
-                braceDepth--;                              // служебная закрывающая }
+                if (stopAtBrace) break;   // конец нашей группы — '}' остаётся нетронутой
                 this.skipWs();
-                this.i++;                                  // пропускаем её, в текст не идёт
+                this.i++;                 // лишняя закрывающая } — молча пропускаем
                 continue;
             }
-            if (!stopAtBrace && c === ')') break;
-            if (c === '{') braceDepth++;
+            if (!stopAtBrace && c === ')') {
+                // лишняя ')' без пары — пропускаем, иначе parseAtom вернёт null
+                // на той же позиции и цикл зациклится
+                if (!this.hasUnmatchedOpenParen(this.i)) { this.i++; continue; }
+                break;
+            }
+            // Закрывающий ограничитель без парного открывающего — молча пропускаем
+            if (this.skipUnmatchedCloser()) continue;
             const before = this.i;
             const nodes = this.parseAtom();
             for (const n of nodes) if (n) children.push(n);
@@ -216,6 +222,22 @@ class Parser {
             if (this.i === before) this.i++;
         }
         return children;
+    }
+
+    // Прочитать {...} как атом-группу (для постфиксов _ и ^).
+    // Если '{' нет на месте — вернуть null (курсор не двигать!). Раньше здесь
+    // был вызов parseArgOrChar(), который при отсутствии '{' съедал следующий
+    // токен «как аргумент» — из-за этого T_{1/2} превращалось в T_ + дробь из
+    // последующего текста, а t_{\text{изм}} терял индексы («t_{}изм»).
+    readBracedGroupOrNull() {
+        const save = this.i;
+        this.skipWs();
+        if (this.s[this.i] !== '{') { this.i = save; return null; }
+        this.i++;
+        const nodes = this.parseGroup(true);
+        this.skipWs();
+        if (this.s[this.i] === '}') this.i++;
+        return nodes;
     }
 
     // Аргумент-фигурные скобки {...} → массив узлов (с возвратом курсора на место).
@@ -252,6 +274,8 @@ class Parser {
             if (n2 === 'rangle') return new MathRun('⟩');
             if (n2 === '.') return new MathRun('');
             if (n2 === '|') return new MathRun('|');
+            if (n2 === "'") return new MathRun('\u2032');
+            if (n2 === '"') return new MathRun('\u2033');
             if (GREEK[n2]) return new MathRun(GREEK[n2]);
             if (SYMBOLS[n2]) return new MathRun(SYMBOLS[n2]);
             this.i = save;
@@ -335,6 +359,12 @@ class Parser {
         while (this.i < this.s.length && /\s/.test(this.s[this.i])) { spaces++; this.i++; }
 
         let node = this.parsePrefix();
+        // \sum\nolimits и т.п. — оператор без выносных пределов: обычный символ,
+        // а _/^ соберёт обычный постфикс в цикле ниже.
+        if (node && node.__noLimit) {
+            delete node.__noLimit;
+            return [node];
+        }
         // Большие операторы (∑, ∫, ∏) с пределами → nary-конструкция Word
         if (node && node.__bigOp) {
             const big = node;
@@ -344,8 +374,8 @@ class Parser {
                 if (c === '_' || c === '^') {
                     this.skipWs();
                     this.i++;
-                    const script = this.parseArgOrChar();
-                    if (c === '_') sub = script; else sup = script;
+                    const script = this.readBracedGroupOrNull(); // null, если нет {...} — не съедаем следующий токен
+                    if (script) { if (c === '_') sub = script; else sup = script; }
                 } else break;
             }
             const opts = { children: [new MathRun(big.text)] };
@@ -356,12 +386,37 @@ class Parser {
         for (;;) {
             const c = this.peekChar();
             if (c === '_' || c === '^') {
+                const save = this.i;
                 this.skipWs();
                 this.i++; // consume _ or ^
-                const script = this.parseArgOrChar();
-                node = c === '_'
-                    ? new MathSubScript({ children: [node], subScript: script })
-                    : new MathSuperScript({ children: [node], superScript: script });
+                const group = this.readBracedGroupOrNull();
+                if (group) {
+                    node = c === '_'
+                        ? new MathSubScript({ children: [node], subScript: group })
+                        : new MathSuperScript({ children: [node], superScript: group });
+                } else {
+                    // одиночный символ индекса: x_2, x^*, \alpha^\beta
+                    const ch = this.s[this.i];
+                    if (ch === '\\') {
+                        const tok = this.readToken();
+                        const name = tok ? tok.name : '';
+                        const sym = GREEK[name] || SYMBOLS[name] || (tok && tok.raw ? name : null);
+                        if (sym != null && sym !== '') {
+                            this.i = save;
+                            node = this.buildScript(c, node, [new MathRun(sym)]);
+                        } else {
+                            this.i = save; // откат: непонятная команда после _/^
+                            break;
+                        }
+                    } else if (/[a-zA-Z0-9*+\u2032\u2033]/.test(ch)) {
+                        this.i++;
+                        this.i = save;
+                        node = this.buildScript(c, node, [new MathRun(ch)]);
+                    } else {
+                        this.i = save; // невалидный индекс — выводим как есть и идём дальше
+                        break;
+                    }
+                }
             } else if (c === '/') {
                 this.skipWs();
                 this.i++; // consume /
@@ -382,6 +437,33 @@ class Parser {
             out.push(node);
         }
         return out;
+    }
+
+    // Собрать sSub/sSup, дополнительно «приклеив» непосредственно следующий за
+    // индексом атом того же уровня: в TeX x^2y — это (x^2)y, а не x^(2y).
+    buildScript(kind, baseNode, scriptNodes) {
+        const after = this.readImplicitScriptArg();
+        const all = after ? scriptNodes.concat(after) : scriptNodes;
+        return kind === '_'
+            ? new MathSubScript({ children: [baseNode], subScript: all })
+            : new MathSuperScript({ children: [baseNode], superScript: all });
+    }
+
+    // Непосредственно примыкающий одиночный символ/группа после индекса (без пробела).
+    readImplicitScriptArg() {
+        const c = this.s[this.i];
+        if (c === undefined || c === '' || /\s/.test(c)) return null;
+        if (/[a-zA-Z0-9]/.test(c)) { this.i++; return [new MathRun(c)]; }
+        if (c === '\\') {
+            const save = this.i;
+            const tok = this.readToken();
+            const name = tok ? tok.name : '';
+            const sym = GREEK[name] || SYMBOLS[name] || (tok && tok.raw ? name : null);
+            if (sym != null && sym !== '') return [new MathRun(sym)];
+            this.i = save;
+            return null;
+        }
+        return null;
     }
 
     // Аргумент после _/^ или знаменатель после /: один символ или {...}
@@ -411,6 +493,11 @@ class Parser {
         while (this.i < this.s.length && /[a-zA-Z]/.test(this.s[this.i])) t += this.s[this.i++];
         if (t === '') {
             const ch = this.s[this.i];
+            if (ch === '\\' || ch === '"' || ch === '{' || ch === '}') {
+                // \' (prime), \" (double prime), \{ \} — многосимвольные «сырые» команды
+                this.i++;
+                return { name: ch === '\\' ? "'" : ch, raw: true };
+            }
             if (ch !== undefined) { this.i++; return { name: ch, raw: true }; }
             return { name: '', raw: true };
         }
@@ -457,6 +544,7 @@ class Parser {
     }
 
     // \left/ \right: собираем содержимое до парной команды как m:d с нужными скобками.
+    // Те же правила используются для \bigl( ... \bigr) и т.п. (openName === null).
     parseBracketPair(openName) {
         const closer = openName === 'left' ? 'right' : 'left';
         const startI = this.i;
@@ -464,8 +552,8 @@ class Parser {
         let j = startI;
         let delimIdx = -1;
         while (j < this.s.length) {
-            if (this.s.startsWith('\\left', j)) { depth++; j += 5; continue; }
-            if (this.s.startsWith('\\' + closer, j)) {
+            if (this.s.startsWith('\\\\left', j)) { depth++; j += 5; continue; }
+            if (this.s.startsWith('\\\\' + closer, j)) {
                 if (depth === 0) { delimIdx = j; break; }
                 depth--; j += closer.length + 1; continue;
             }
@@ -505,6 +593,181 @@ class Parser {
             } else break;
         }
         return node;
+    }
+
+    // Команда-токен, начинающаяся в позиции j: возвращает { name, after }.
+    commandAt(j) {
+        let k = j + 1;
+        let name = '';
+        while (k < this.s.length && /[a-zA-Z]/.test(this.s[k])) { name += this.s[k]; k++; }
+        if (name === '') { name = this.s[k] != null ? this.s[k] : ''; k++; }
+        return { name, after: k };
+    }
+
+    // Индексы всех команд вида \name (с позицией имени и концом имени).
+    listCommands(names) {
+        const out = [];
+        let j = 0;
+        while (j < this.s.length) {
+            if (this.s[j] === '\\') {
+                const cmd = this.commandAt(j);
+                if (names.includes(cmd.name)) out.push({ at: j, afterName: cmd.after, name: cmd.name });
+                j = cmd.after;
+                continue;
+            }
+            j++;
+        }
+        return out;
+    }
+
+    // Есть ли незакрытая '(' до позиции pos (для решения — ломать ли группу на ')').
+    hasUnmatchedOpenParen(pos) {
+        let d = 0;
+        for (let j = 0; j < pos; j++) {
+            const ch = this.s[j];
+            if (ch === '{' || ch === '(') d++;
+            else if (ch === '}' || ch === ')') d--;
+        }
+        return d > 0;
+    }
+
+    // Пропустить закрывающий ограничитель/\end без парной открывающей конструкции.
+    // Возвращает true, если что-то потребили (курсор сдвинут).
+    skipUnmatchedCloser() {
+        const rest = this.restTrimmed();
+        const mClose = rest.match(/^\\(right|bigr|Bigr|biggr|Biggr|middle)(\b|[^a-zA-Z])/);
+        if (mClose) {
+            const pos = this.i + (rest.length - rest.trimStart().length);
+            const openers = this.listCommands(['left', 'bigl', 'Bigl', 'biggl', 'Biggl']).filter((c) => c.at < pos);
+            const closers = this.listCommands(['right', 'bigr', 'Bigr', 'biggr', 'Biggr', 'middle']).filter((c) => c.at < pos);
+            if (openers.length <= closers.length) return false; // парный — обработает parsePrefix
+            const cmd = this.commandAt(pos);
+            let k = cmd.after;
+            while (k < this.s.length && /\s/.test(this.s[k])) k++;
+            if (k < this.s.length && this.s[k] !== '\\') k++; // символ-ограничитель
+            this.i = Math.max(k, pos + mClose[0].length);
+            return true;
+        }
+        if (rest.startsWith('\\end')) {
+            const pos = this.i + (rest.length - rest.trimStart().length);
+            const mm = rest.match(/^\\end\{([^}]*)\}/);
+            const env = mm ? mm[1] : '';
+            const begins = this.listCommands(['begin']).filter((c) => this.s.slice(c.afterName).startsWith('{' + env + '}'));
+            const ends = this.listCommands(['end']).filter((c) => this.s.slice(c.afterName).startsWith('{' + env + '}')).filter((c) => c.at < pos);
+            if (begins.length > ends.length) return false; // парный — обработает parseEnvironment
+            this.i = pos + (mm ? mm[0].length : 4);
+            return true;
+        }
+        return false;
+    }
+
+    // Ищем парный ограничитель (\right для \left, либо другой \big*-модификатор).
+    findCloserIndex(startI, closer) {
+        let j = startI;
+        let depth = 0;
+        while (j < this.s.length) {
+            if (this.s[j] === '\\') {
+                if (closer === 'right' && this.s.startsWith('\\left', j)) { depth++; j += 5; continue; }
+                if (this.s.startsWith('\\' + closer, j)) {
+                    if (depth === 0) return j;
+                    depth--; j += closer.length + 1; continue;
+                }
+                j++;
+                let k = j;
+                while (k < this.s.length && /[a-zA-Z]/.test(this.s[k])) k++;
+                j = k > j ? k : j + 1;
+                continue;
+            }
+            j++;
+        }
+        return -1;
+    }
+
+    // Скобочная пара с ручным поиском закрывающей скобки — чтобы лишняя ')'
+    // внутри содержимого не обрывала формулу («exp(-\mu_i(E),» → «exp (-\mu_i(E»).
+    parseDelimited(innerSrc, openCh, closeCh) {
+        const children = new Parser(innerSrc).parseGroup(false);
+        const opts = { children };
+        const kind = { '(' : 'round', '[' : 'square', '{': 'curly', '|': 'round', '‖': 'double', '⟨': 'angle' }[openCh] || 'none';
+        if (kind !== 'none') {
+            if (openCh === '|') opts.beginCharacter = '|';
+            if (openCh === '‖') opts.beginCharacter = '‖';
+            if (closeCh === '|') opts.endCharacter = '|';
+            if (closeCh === '‖') opts.endCharacter = '‖';
+        }
+        switch (kind) {
+            case 'round': return new MathRoundBrackets(opts);
+            case 'square': return new MathSquareBrackets(opts);
+            case 'curly': return new MathCurlyBrackets(opts);
+            case 'angle': return new MathAngledBrackets(opts);
+            default: return new DocxMath({ children });
+        }
+    }
+
+    // \left ... \right: содержимое до парной команды → m:d с нужными скобками.
+    parseBracketPair(openName) {
+        const closer = openName === 'left' ? 'right' : 'left';
+        const delimIdx = this.findCloserIndex(this.i, closer);
+        // содержимое: после '\left' + ограничитель, до '\right'
+        let cs = this.i + 5; // сразу после '\left'
+        while (cs < this.s.length && /\s/.test(this.s[cs])) cs++;
+        if (cs < this.s.length && this.s[cs] === '\\') { const c2 = this.commandAt(cs); cs = c2.after; }
+        else if (cs < this.s.length) cs++; // сам символ-ограничитель '(' '[' и т.п.
+        const innerSrc = delimIdx >= 0 ? this.s.slice(cs, delimIdx) : this.s.slice(cs);
+        // читаем ограничители через обычный механизм для текста скобок
+        const openDelim = this.parseDelimiterRun();
+        const openCh = openDelim ? Parser.mathRunText(openDelim) || '' : '';
+        let closeCh = '';
+        if (delimIdx >= 0) {
+            this.i = delimIdx;
+            this.readToken(); // '\right'
+            const cd = this.parseDelimiterRun();
+            closeCh = cd ? Parser.mathRunText(cd) || '' : '';
+        } else {
+            this.i = this.s.length;
+        }
+        return this.parseDelimited(innerSrc, openCh, closeCh);
+    }
+
+    // \bigl( ... \bigr), \Bigl[ ... \Bigr] и т.п.: находим парный закрывающий
+    // модификатор и собираем содержимое как m:d.
+    parseBigPair(openName) {
+        const isLeftish = /l$/.test(openName);
+        const candidates = ['left', 'right', 'big', 'Big', 'bigg', 'Bigg', 'bigl', 'bigr', 'biggl', 'biggr', 'Bigl', 'Bigr'];
+        const closerSet = isLeftish
+            ? candidates.filter((n) => !/l$/.test(n))   // right, bigr, biggr, Big, Bigg, Bigr...
+            : [];                                        // без парного — обычная скобка-запуск
+        let j = this.i;
+        let delimIdx = -1;
+        while (j < this.s.length && delimIdx < 0) {
+            if (this.s[j] === '\\') {
+                for (const cn of closerSet) {
+                    if (this.s.startsWith('\\' + cn, j)) { delimIdx = j; break; }
+                }
+                if (delimIdx >= 0) break;
+                j++;
+                let k = j;
+                while (k < this.s.length && /[a-zA-Z]/.test(this.s[k])) k++;
+                j = k > j ? k : j + 1;
+                continue;
+            }
+            j++;
+        }
+        // открывающий ограничитель читаем от текущей позиции
+        const openDelim = this.parseDelimiterRun();
+        const contentStart = this.i;
+        const innerSrc = delimIdx >= 0 ? this.s.slice(contentStart, delimIdx) : this.s.slice(contentStart);
+        this.i = delimIdx >= 0 ? delimIdx : this.s.length;
+        const openCh = openDelim ? Parser.mathRunText(openDelim) || '' : '';
+        let closeCh = '';
+        if (delimIdx >= 0) {
+            const save = this.i;
+            this.readToken(); // пропускаем команду-закрывалку (\bigr и т.п.)
+            const cd = this.parseDelimiterRun();
+            closeCh = cd ? Parser.mathRunText(cd) || '' : '';
+            if (!cd) this.i = save;
+        }
+        return this.parseDelimited(innerSrc, openCh, closeCh);
     }
 
     parsePrefix() {
@@ -611,7 +874,40 @@ class Parser {
                 const arg = this.grabBracedContent();
                 return new MathRun(arg == null ? '' : '  (' + arg + ')');
             }
+            if (name === 'nolimits' || name === 'limits') {
+                // применялось к только что прочитанному... на практике встречается сразу
+                // после оператора: sum-nolimits_i — обработчик постфиксов это же и делает.
+                return null;
+            }
+            if (name === 'textstyle' || name === 'displaystyle' || name === 'scriptstyle' || name === 'limits') {
+                // стилистические команды — игнорируем, но следующий за ними большой
+                // оператор читаем сейчас (иначе он уедет отдельным атомом)
+                const nxt = this.restTrimmed();
+                const m2 = nxt.match(/^\\([a-zA-Z]+)/);
+                if (m2 && NOLIMITS_OPS[m2[1]]) {
+                    this.skipWs();
+                    this.readToken();
+                    const marker = new MathRun(BIG_OPERATORS[m2[1]]);
+                    marker.__noLimit = true;
+                    return marker;
+                }
+                return null;
+            }
             if (BIG_OPERATORS[name]) {
+                // sum-limits / sum-nolimits — необязательный модификатор сразу после оператора
+                const restAfter = this.restTrimmed();
+                const ml = restAfter.match(/^\\(limits|nolimits)/);
+                if (ml) {
+                    if (ml[1] === 'nolimits') {
+                        this.skipWs();
+                        this.readToken();
+                        const marker = new MathRun(BIG_OPERATORS[name]);
+                        marker.__noLimit = true;
+                        return marker;
+                    }
+                    this.skipWs();
+                    this.readToken(); // \limits — стандартное поведение, просто пропускаем
+                }
                 // маркер большого оператора — parseAtom соберёт из него nary с пределами
                 const marker = new MathRun(BIG_OPERATORS[name]);
                 marker.__bigOp = true;
@@ -677,8 +973,31 @@ function splitTextChunks(latex) {
         }
         return [latex.slice(from + 1), j];
     };
+    // Позиции содержимого \left ... \right — внутри них \text не выносим
+    // (иначе «(t_{\text{жив}})» разрывалось, а «\text» из вложенных скобок
+    // съедал следующий за ним «\tag»).
+    const protectedRanges = [];
+    {
+        let k = 0;
+        while (k < latex.length) {
+            if (latex.startsWith('\\left', k)) {
+                const closeIdx = latex.indexOf('\\right', k);
+                if (closeIdx >= 0) {
+                    // конец пары — после ограничителя \right
+                    let e = closeIdx + 7;
+                    while (e < latex.length && /\s/.test(latex[e])) e++;
+                    if (e < latex.length) e++; // сам символ-ограничитель
+                    protectedRanges.push([k, e]);
+                    k = e;
+                    continue;
+                }
+            }
+            k++;
+        }
+    }
+    const isProtected = (pos) => protectedRanges.some(([a, b]) => pos >= a && pos < b);
     while (i < latex.length) {
-        if (latex.startsWith('\\text', i) && /\{/.test(latex.slice(i, i + 8))) {
+        if (!isProtected(i) && latex.startsWith('\\text', i) && /\{/.test(latex.slice(i, i + 8))) {
             let k = i + 5;
             while (k < latex.length && /\s/.test(latex[k])) k++;
             if (latex[k] === '{') {
@@ -728,7 +1047,7 @@ function mathBlockParagraphs(latex, opts = {}) {
     const runs = [];
     for (const p of parts) {
         if (p.math != null) runs.push(latexToDocxMath(p.math));
-        else runs.push(new TextRun({ text: p.text, italics: true }));
+        else runs.push(new TextRun({ text: p.text, bold: !!p.bold }));
     }
     return [new Paragraph({ alignment: 'center', spacing, children: runs })];
 }
@@ -738,21 +1057,75 @@ function mathBlockParagraphs(latex, opts = {}) {
 // ──────────────────────────────────────────────
 
 // Инлайн-формулы \( ... \), \[ ... \] и $ ... $ внутри текста.
-// Открывающий и закрывающий разделители должны быть одинаковыми: иначе
-// «\\(a \\] b \\)» разъедает формулу на куски (баг, ломавший t_k в тексте).
-const INLINE_MATH_RE = /\\\(([\s\S]+?)\\\)|\\\[([\s\S]+?)\\\]|\$\$([\s\S]+?)\$\$|\$([^$\n]+?)\$/;
+// Парсим вручную (без единого большого regex'а): раньше альтернатива
+// «\\\[...\\\]» с [\s\S] при незакрытой \[ съедала весь текст до конца абзаца —
+// из-за этого пропадали скобки и содержимое формул (баги вида «T_i = exp (-\mu_i(E»).
+// Разделители должны быть парными: «\(a \] b \)» не разрывает формулу на куски.
+function findClose(text, closer, from) {
+    let i = from;
+    while (i < text.length) {
+        if (text[i] === '\\') { i += 2; continue; }      // экранированный символ не считаем
+        if (closer.length === 1) {
+            if (text.startsWith(closer, i)) return i;
+            i++;
+        } else {
+            if (text.startsWith(closer, i)) return i;     // '\)' / '\]' / '$$'
+            i++;
+        }
+    }
+    return -1;
+}
 
 function splitMath(text) {
     const parts = [];
-    const re = new RegExp(INLINE_MATH_RE.source, 'g');
-    let last = 0, m;
-    while ((m = re.exec(text)) !== null) {
-        if (m.index > last) parts.push({ type: 'text', value: text.slice(last, m.index) });
-        const v = (m[1] != null ? m[1] : m[2] != null ? m[2] : m[3] != null ? m[3] : m[4]).trim();
-        parts.push({ type: 'math', value: v });
-        last = re.lastIndex;
+    let buf = '';
+    let i = 0;
+    const flush = () => { if (buf) { parts.push({ type: 'text', value: buf }); buf = ''; } };
+    while (i < text.length) {
+        // \( ... \)
+        if (text.startsWith('\\(', i)) {
+            const close = findClose(text, '\\)', i + 2);
+            if (close >= 0) {
+                flush();
+                parts.push({ type: 'math', value: text.slice(i + 2, close).trim() });
+                i = close + 2;
+                continue;
+            }
+        }
+        // \[ ... \] (инлайн-вариант; многострочные блоки перехвачены раньше блок-парсером)
+        if (text.startsWith('\\[', i)) {
+            const close = findClose(text, '\\]', i + 2);
+            if (close >= 0) {
+                flush();
+                parts.push({ type: 'math', value: text.slice(i + 2, close).trim() });
+                i = close + 2;
+                continue;
+            }
+        }
+        // $$ ... $$
+        if (text.startsWith('$$', i)) {
+            const close = findClose(text, '$$', i + 2);
+            if (close >= 0) {
+                flush();
+                parts.push({ type: 'math', value: text.slice(i + 2, close).trim() });
+                i = close + 2;
+                continue;
+            }
+        }
+        // $ ... $ (в пределах одной строки)
+        if (text[i] === '$') {
+            const close = text.indexOf('$', i + 1);
+            if (close > i && !text.slice(i + 1, close).includes('\n')) {
+                flush();
+                parts.push({ type: 'math', value: text.slice(i + 1, close).trim() });
+                i = close + 1;
+                continue;
+            }
+        }
+        buf += text[i];
+        i++;
     }
-    if (last < text.length) parts.push({ type: 'text', value: text.slice(last) });
+    flush();
     return parts;
 }
 
