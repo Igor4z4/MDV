@@ -38,23 +38,72 @@ function isParagraphLevel(el) {
 // должны быть прямыми потомками соответствующего элемента. Если в children
 // попался «контейнер» DocxMath (например, группа {...}), раскрываем его —
 // иначе получается <m:oMath> внутри <m:e>/<m:num>, что Word не может прочитать.
-function normalizeChildren(arr) {
+// В docx@8 children хранятся уже собранными в m:oMath, поэтому работаем через
+// rootKey/root и пересобираем Math из раскрытых узлов.
+function isContainerMath(el) {
+    return !!(el && el.rootKey === 'm:oMath' && Array.isArray(el.root));
+}
+
+function unwrapContainer(el) {
+    // [MathRun] — одиночный запуск: возвращаем его как есть
+    if (el.root.length === 1 && el.root[0].rootKey === 'm:r') return el.root[0];
+    // несколько узлов — оборачиваем в m:e (внутри m:d это законная конструкция)
+    return { rootKey: 'm:e', root: el.root.slice() };
+}
+
+function normalizeRoot(root) {
+    if (!root || typeof root !== 'object') return root;
+    if (Array.isArray(root)) {
+        for (let idx = 0; idx < root.length; idx++) {
+            const el = root[idx];
+            if (isContainerMath(el)) {
+                const norm = normalizeChildrenInternal(el.root);
+                root.splice(idx, 1, ...(norm.length === 1 ? norm : [unwrapFromNodes(norm)]));
+                idx += norm.length - 1;
+            } else {
+                normalizeInto(el.root);
+            }
+        }
+        return root;
+    }
+    if (root.rootKey !== undefined) { normalizeInto(root.root); return root; }
+    for (const k of Object.keys(root)) normalizeInto(root[k]);
+    return root;
+}
+
+function normalizeInto(x) {
+    if (Array.isArray(x) || (x && typeof x === 'object')) normalizeRoot(x);
+}
+
+function unwrapFromNodes(nodes) {
+    if (nodes.length === 1 && nodes[0].rootKey === 'm:r') return nodes[0];
+    return { rootKey: 'm:e', root: nodes };
+}
+
+function normalizeChildrenInternal(arr) {
     const out = [];
     for (const el of arr || []) {
         if (!el) continue;
-        if (el instanceof DocxMath) {
-            // контейнер-группа: поднимаем детей наверх (рекурсивно нормализуя)
-            out.push(...normalizeChildren(el.children));
+        if (isContainerMath(el)) {
+            out.push(...normalizeChildrenInternal(el.root));
         } else {
-            if (Array.isArray(el.children)) el.children = normalizeChildren(el.children);
+            normalizeInto(el.root);
             out.push(el);
         }
     }
     return out;
 }
+
 function wrapCompositeChildren(node) {
     try {
-        if (node && Array.isArray(node.children)) node.children = normalizeChildren(node.children);
+        if (!node) return;
+        if (isContainerMath(node)) {
+            const kids = normalizeChildrenInternal(node.root);
+            node.root.length = 0;
+            node.root.push(...kids);
+        } else {
+            normalizeInto(node.root);
+        }
     } catch (e) { /* best effort */ }
 }
 
@@ -151,9 +200,11 @@ class Parser {
             const c = this.peekChar();
             if (c === null) break; // остались только пробелы
             if (c === '}') {
-                // незакрытая группа или конец нашей группы — выходим,
-                // чтобы «}» не превратился в лишний символ в документе
-                if (stopAtBrace || braceDepth <= 0) break;
+                if (stopAtBrace && braceDepth === 0) break; // конец нашей группы
+                braceDepth--;                              // служебная закрывающая }
+                this.skipWs();
+                this.i++;                                  // пропускаем её, в текст не идёт
+                continue;
             }
             if (!stopAtBrace && c === ')') break;
             if (c === '{') braceDepth++;
@@ -163,7 +214,6 @@ class Parser {
             // Защита от зависания: если позиция не сдвинулась — принудительно
             // пропускаем один символ, чтобы цикл гарантированно завершался.
             if (this.i === before) this.i++;
-            else if (this.s.slice(before, this.i).includes('}')) braceDepth--;
         }
         return children;
     }
@@ -688,7 +738,9 @@ function mathBlockParagraphs(latex, opts = {}) {
 // ──────────────────────────────────────────────
 
 // Инлайн-формулы \( ... \), \[ ... \] и $ ... $ внутри текста.
-const INLINE_MATH_RE = /(\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|\$\$[\s\S]+?\$\$|\$[^$\n]+?\$)/;
+// Открывающий и закрывающий разделители должны быть одинаковыми: иначе
+// «\\(a \\] b \\)» разъедает формулу на куски (баг, ломавший t_k в тексте).
+const INLINE_MATH_RE = /\\\(([\s\S]+?)\\\)|\\\[([\s\S]+?)\\\]|\$\$([\s\S]+?)\$\$|\$([^$\n]+?)\$/;
 
 function splitMath(text) {
     const parts = [];
@@ -696,27 +748,8 @@ function splitMath(text) {
     let last = 0, m;
     while ((m = re.exec(text)) !== null) {
         if (m.index > last) parts.push({ type: 'text', value: text.slice(last, m.index) });
-        const s = m[0];
-        let v;
-        if (s.charAt(0) === '\\') v = s.slice(2, -2);
-        else if (s.startsWith('$$')) v = s.slice(2, -2);
-        else v = s.slice(1, -1);
-        parts.push({ type: 'math', value: v.trim() });
-        last = re.lastIndex;
-    }
-    if (last < text.length) parts.push({ type: 'text', value: text.slice(last) });
-    return parts;
-}
-
-function splitInline(text) {
-    const parts = [];
-    const re = /(\$\$[\s\S]+?\$\$|\$[^$\n]+?\$)/g;
-    let last = 0, m;
-    while ((m = re.exec(text)) !== null) {
-        if (m.index > last) parts.push({ type: 'text', value: text.slice(last, m.index) });
-        const t = m[0];
-        if (t.startsWith('$$')) parts.push({ type: 'math', value: t.slice(2, -2).trim(), display: true });
-        else parts.push({ type: 'math', value: t.slice(1, -1).trim(), display: false });
+        const v = (m[1] != null ? m[1] : m[2] != null ? m[2] : m[3] != null ? m[3] : m[4]).trim();
+        parts.push({ type: 'math', value: v });
         last = re.lastIndex;
     }
     if (last < text.length) parts.push({ type: 'text', value: text.slice(last) });
@@ -726,49 +759,51 @@ function splitInline(text) {
 // Инлайн-токены: **жирный**, __жирный__, *курсив*, _курсив_, `код`, ~~зачёркнутый~~.
 const INLINE_TOKEN_RE = /(\*\*[^*\n]+\*\*|__[^_\n]+__|~~[^~\n]+~~|`[^`\n]+`|\*[^*\s][^*\n]*\*|_[^_\s][^_\n]*_)/g;
 
+// Разбивает ТЕКСТОВЫЙ (нематематический) фрагмент на runs с учётом форматирования.
+// Вызывается рекурсивно, поэтому регулярка создаётся локально — общий глобальный
+// lastIndex при рекурсии ломает цикл (вплоть до зависания).
+function parseFormatting(text, fmt) {
+    const runs = [];
+    const re = new RegExp(INLINE_TOKEN_RE.source, 'g');
+    let last = 0, m;
+    while ((m = re.exec(text)) !== null) {
+        if (m.index > last) {
+            const plain = text.slice(last, m.index);
+            if (plain) runs.push(new TextRun({ text: plain, ...fmt }));
+        }
+        const s = m[0];
+        if (s.startsWith('**') || s.startsWith('__')) {
+            runs.push(...parseFormatting(s.slice(2, -2), { ...fmt, bold: true }));
+        } else if (s.startsWith('~~')) {
+            runs.push(...parseFormatting(s.slice(2, -2), { ...fmt, strike: true }));
+        } else if (s.startsWith('`')) {
+            runs.push(new TextRun({ text: s.slice(1, -1), font: 'Consolas', ...fmt }));
+        } else {
+            runs.push(...parseFormatting(s.slice(1, -1), { ...fmt, italics: true }));
+        }
+        last = re.lastIndex;
+    }
+    if (last < text.length) {
+        const plain = text.slice(last);
+        if (plain) runs.push(new TextRun({ text: plain, ...fmt }));
+    }
+    return runs;
+}
+
+// Основной инлайн-парсер: сначала вырезаем формулы \\( \\), \\[ \\], $...$ —
+// внутри них звёздочки и подчёркивания не относятся к Markdown-форматированию.
 function parseRuns(text, fmt) {
     fmt = fmt || {};
     const runs = [];
-    // Сначала вырезаем формулы: внутри \( \) могут встречаться звёздочки
-    // и подчёркивания, не относящиеся к Markdown-форматированию.
     for (const seg of splitMath(text)) {
-        if (seg.type === 'math') { runs.push(latexToDocxMath(seg.value)); continue; }
-        // Локальная копия регулярки с собственной lastIndex — иначе рекурсивные
-        // вызовы «съедают» позицию общего глобального объекта и цикл зависает.
-        const re = new RegExp(INLINE_TOKEN_RE.source, 'g');
-        let last = 0, m;
-        while ((m = re.exec(seg.value)) !== null) {
-            if (m.index > last) {
-                const plain = seg.value.slice(last, m.index);
-                if (plain) runs.push(new TextRun({ text: plain, ...fmt }));
-            }
-            const s = m[0];
-            if (s.startsWith('**') || s.startsWith('__')) {
-                runs.push(...parseRuns(s.slice(2, -2), { ...fmt, bold: true }));
-            } else if (s.startsWith('~~')) {
-                runs.push(...parseRuns(s.slice(2, -2), { ...fmt, strike: true }));
-            } else if (s.startsWith('`')) {
-                runs.push(new TextRun({ text: s.slice(1, -1), font: 'Consolas', ...fmt }));
-            } else {
-                runs.push(...parseRuns(s.slice(1, -1), { ...fmt, italics: true }));
-            }
-            last = re.lastIndex;
-        }
-        if (last < seg.value.length) {
-            const plain = seg.value.slice(last);
-            if (plain) runs.push(new TextRun({ text: plain, ...fmt }));
-        }
+        if (seg.type === 'math') runs.push(latexToDocxMath(seg.value));
+        else runs.push(...parseFormatting(seg.value, fmt));
     }
     return runs;
 }
 
 function inlineChildren(text) {
-    const children = [];
-    for (const part of splitInline(text)) {
-        if (part.type === 'math') children.push(latexToDocxMath(part.value));
-        else children.push(...parseRuns(part.value));
-    }
-    return children;
+    return parseRuns(text);
 }
 
 // ──────────────────────────────────────────────
@@ -796,7 +831,7 @@ function mdToDocxElements(md) {
         if (ddOpen && !/\$\$/.test(ddOpen[1])) {
             let buf = ddOpen[1] + '\n';
             i++;
-            while (i < lines.length && !/^\s*.*\$\$/.test(lines[i])) buf += lines[i++] + '\n';
+            while (i < lines.length && !/\$\$/.test(lines[i])) buf += lines[i++] + '\n';
             if (i < lines.length) {
                 const closeIdx = lines[i].indexOf('$$');
                 buf += lines[i].slice(0, closeIdx);
@@ -809,10 +844,12 @@ function mdToDocxElements(md) {
         const ddOne = line.match(/^\s*\$\$(.+?)\$\$\s*$/);
         if (ddOne) { blocks.push({ type: 'mathblock', latex: ddOne[1].trim() }); i++; continue; }
 
-        // \[ ... \]
-        const brOpen = line.match(/^\s*\\\[(.*)$/);
-        if (brOpen && !/\\\]/.test(brOpen[1])) {
-            let buf = brOpen[1] + '\n';
+        // \[ ... \] (в т.ч. однострочный вариант)
+        const brOpen = line.match(/^\s*\\\[([\s\S]*?)\\\]\s*$/);
+        if (brOpen) { blocks.push({ type: 'mathblock', latex: brOpen[1].trim() }); i++; continue; }
+        const brMulti = line.match(/^\s*\\\[(.*)$/);
+        if (brMulti) {
+            let buf = brMulti[1] + '\n';
             i++;
             while (i < lines.length && !/\\\]/.test(lines[i])) buf += lines[i++] + '\n';
             if (i < lines.length) buf += lines[i].replace(/\\\].*$/, '');
@@ -888,7 +925,7 @@ function blockToElements(b) {
         case 'paragraph':
             return [new Paragraph({ spacing: { after: 120 }, children: inlineChildren(b.text) })];
         case 'mathblock':
-            return [new Paragraph({ alignment: 'center', spacing: { before: 120, after: 120 }, children: [latexToDocxMath(b.latex)] })];
+            return mathBlockParagraphs(b.latex);
         case 'code':
             return b.lines.map((l) => new Paragraph({
                 shading: { fill: 'F5F5F5' },
