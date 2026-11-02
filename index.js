@@ -7,36 +7,81 @@ const { execFile } = require('child_process');
 // ─── Экспорт в DOCX ──────────────────────────────────────────────────────────
 // Основной путь — Pandoc (https://pandoc.org): проверенный конвертер
 // Markdown + LaTeX-формул в DOCX с нативными формулами Word (Office Math).
-// Ищем исполняемый файл pandoc: в PATH, затем в типичных каталогах Windows.
-const PANDOC_CANDIDATES = [
-    'pandoc',                                        // из PATH
-    path.join(process.env.LOCALAPPDATA || '', 'Pandoc', 'pandoc.exe'),
-    'C:\\Program Files\\Pandoc\\pandoc.exe',
-    path.join(process.env.PROGRAMFILES || '', 'Pandoc', 'pandoc.exe')
+//
+// Порядок поиска pandoc:
+//   1) встроенный в приложение (папка bin/ рядом с main-процессом, бинарник
+//      скачивается скриптом setup.js при подготовке проекта к сборке);
+//   2) переменная окружения MDV_PANDOC (путь к exe);
+//   3) системный PATH и типичные каталоги установки на Windows.
+//
+// Важно: «модуль pandoc» в npm — это лишь обёртка над тем же exe; ядра
+// конвертации как отдельной JS-библиотеки не существует (pandoc написан на
+// Haskell), поэтому в проект берётся сам исполняемый файл.
+
+// Внутри asar-архива запустить exe нельзя, поэтому при сборке bin/ exclusion'ится
+// из архива (см. package.json -> build.asarUnpacked) и electron-builder кладёт
+// его рядом как "bin.unpacked". Ниже перебираем все разумные расположения.
+const BIN_DIRS = [
+    path.join(__dirname, 'bin'),                      // разработка (npm start)
+    path.join(__dirname, 'bin.unpacked'),             // asarUnpacked (NSIS-сборка)
+    path.join(path.dirname(app.getPath('exe')), 'resources', 'bin'),            // portable-сборка
+    path.join(path.dirname(app.getPath('exe')), 'resources', 'app.asar.unpacked', 'bin') // NSIS-сборка
 ];
 
-function runPandoc(inputFile, outputFile) {
-    return new Promise((resolve, reject) => {
-        const tryNext = (i) => {
-            if (i >= PANDOC_CANDIDATES.length) {
-                reject(new Error('Pandoc не найден'));
-                return;
+const EXE_NAME = process.platform === 'win32' ? 'pandoc.exe' : 'pandoc';
+
+function bundledPandocPath() {
+    for (const dir of BIN_DIRS) {
+        const p = path.join(dir, EXE_NAME);
+        try {
+            if (fs.existsSync(p)) return p;
+        } catch (_) { /* ignore */ }
+    }
+    return null;
+}
+
+async function checkExecutable(exe) {
+    return new Promise((resolve) => {
+        execFile(exe, ['--version'], { timeout: 5000, windowsHide: true },
+            (err) => resolve(!err));
+    });
+}
+
+let pandocExePromise = null;
+function findPandoc() {
+    if (!pandocExePromise) {
+        pandocExePromise = (async () => {
+            const candidates = [];
+            const bundled = bundledPandocPath();
+            if (bundled) candidates.push(bundled);
+            if (process.env.MDV_PANDOC) candidates.push(process.env.MDV_PANDOC);
+            candidates.push(
+                'pandoc',                                              // из PATH
+                path.join(process.env.LOCALAPPDATA || '', 'Pandoc', 'pandoc.exe'),
+                'C:\\Program Files\\Pandoc\\pandoc.exe',
+                path.join(process.env.PROGRAMFILES || '', 'Pandoc', 'pandoc.exe')
+            );
+            for (const c of candidates) {
+                if (!c) continue;
+                if (await checkExecutable(c)) return c;
             }
-            execFile(PANDOC_CANDIDATES[i],
-                ['--version'],
-                { timeout: 5000, windowsHide: true },
-                (err) => {
-                    if (err) return tryNext(i + 1);          // этот кандидат недоступен
-                    execFile(PANDOC_CANDIDATES[i],
-                        [inputFile, '-f', 'markdown+tex_math_dollars+tex_math_single_backslash', '-t', 'docx', '-o', outputFile],
-                        { timeout: 60000, windowsHide: true },
-                        (err2, stderr) => {
-                            if (err2) reject(new Error(`Pandoc: ${stderr || err2.message}`));
-                            else resolve();
-                        });
-                });
-        };
-        tryNext(0);
+            return null;
+        })();
+    }
+    return pandocExePromise;
+}
+
+async function runPandoc(inputFile, outputFile) {
+    const exe = await findPandoc();
+    if (!exe) throw new Error('Pandoc не найден');
+    return new Promise((resolve, reject) => {
+        execFile(exe,
+            [inputFile, '-f', 'markdown+tex_math_dollars+tex_math_single_backslash', '-t', 'docx', '-o', outputFile],
+            { timeout: 60000, windowsHide: true },
+            (err, _stdout, stderr) => {
+                if (err) reject(new Error(`Pandoc: ${stderr || err.message}`));
+                else resolve();
+            });
     });
 }
 

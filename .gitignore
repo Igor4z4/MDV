@@ -7,6 +7,9 @@ release/
 build/
 out/
 
+# Встроенный бинарник pandoc (скачивается скриптом npm run setup)
+bin/
+
 # Локальный кэш electron / electron-builder (наполняется командой npm run setup)
 .cache/
 
