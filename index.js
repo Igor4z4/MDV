@@ -1,17 +1,67 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
+const os = require('os');
 const fs = require('fs').promises;
+const { execFile } = require('child_process');
 
-// Ленивая загрузка модуля экспорта: он требует пакет "docx", и если он не установлен
-// (например, после git-pull без npm install), приложение должно запускаться как раньше —
-// с ошибкой только при попытке сохранить в .docx.
+// ─── Экспорт в DOCX ──────────────────────────────────────────────────────────
+// Основной путь — Pandoc (https://pandoc.org): проверенный конвертер
+// Markdown + LaTeX-формул в DOCX с нативными формулами Word (Office Math).
+// Ищем исполняемый файл pandoc: в PATH, затем в типичных каталогах Windows.
+const PANDOC_CANDIDATES = [
+    'pandoc',                                        // из PATH
+    path.join(process.env.LOCALAPPDATA || '', 'Pandoc', 'pandoc.exe'),
+    'C:\\Program Files\\Pandoc\\pandoc.exe',
+    path.join(process.env.PROGRAMFILES || '', 'Pandoc', 'pandoc.exe')
+];
+
+function runPandoc(inputFile, outputFile) {
+    return new Promise((resolve, reject) => {
+        const tryNext = (i) => {
+            if (i >= PANDOC_CANDIDATES.length) {
+                reject(new Error('Pandoc не найден'));
+                return;
+            }
+            execFile(PANDOC_CANDIDATES[i],
+                ['--version'],
+                { timeout: 5000, windowsHide: true },
+                (err) => {
+                    if (err) return tryNext(i + 1);          // этот кандидат недоступен
+                    execFile(PANDOC_CANDIDATES[i],
+                        [inputFile, '-f', 'markdown+tex_math_dollars+tex_math_single_backslash', '-t', 'docx', '-o', outputFile],
+                        { timeout: 60000, windowsHide: true },
+                        (err2, stderr) => {
+                            if (err2) reject(new Error(`Pandoc: ${stderr || err2.message}`));
+                            else resolve();
+                        });
+                });
+        };
+        tryNext(0);
+    });
+}
+
+async function convertWithPandoc(markdownContent) {
+    const tmpIn = path.join(os.tmpdir(), `mdv-${Date.now()}.md`);
+    const tmpOut = path.join(os.tmpdir(), `mdv-${Date.now()}.docx`);
+    try {
+        await fs.writeFile(tmpIn, markdownContent, 'utf-8');
+        await runPandoc(tmpIn, tmpOut);
+        return await fs.readFile(tmpOut);
+    } finally {
+        fs.unlink(tmpIn).catch(() => {});
+        fs.unlink(tmpOut).catch(() => {});
+    }
+}
+
+// Резервный путь — встроенный конвертер (пакет "docx"). Загружается лениво:
+// если пакет не установлен, приложение работает как раньше.
 let docxExportModule = null;
 function getDocxExporter() {
     if (!docxExportModule) {
         try {
             docxExportModule = require('./docx-export');
         } catch (err) {
-            console.error('Модуль экспорта DOCX не загружен:', err.message);
+            console.warn('Встроенный модуль экспорта DOCX не загружен:', err.message);
             return null;
         }
     }
@@ -142,12 +192,26 @@ ipcMain.handle('save-file-as', async (event, { defaultPath, content }) => {
 
     try {
         if (isDocx) {
-            // Базовая конвертация Markdown → DOCX (текст + формулы Office Math).
-            const exporter = getDocxExporter();
-            if (!exporter) {
-                throw new Error('Модуль экспорта DOCX недоступен. Выполните "npm install" в папке проекта и перезапустите приложение.');
+            // 1) Основной путь: Pandoc — надёжный экспорт текста и формул (Office Math).
+            let buffer = null;
+            let pandocError = null;
+            try {
+                buffer = await convertWithPandoc(content);
+            } catch (err) {
+                pandocError = err.message;
+                console.warn('Pandoc недоступен/ошибка, пробую встроенный конвертер:', pandocError);
             }
-            const buffer = await exporter.exportMarkdownToDocx(content);
+
+            // 2) Резервный путь: встроенный конвертер на пакете "docx".
+            if (!buffer) {
+                const exporter = getDocxExporter();
+                if (!exporter) {
+                    throw new Error(pandocError && pandocError.includes('Pandoc не найден')
+                        ? 'Не найден Pandoc, а встроенный конвертер недоступен. Установите Pandoc (winget install --id JohnMacFarlane.Pandoc) либо выполните "npm install" в папке проекта.'
+                        : `Не удалось создать DOCX: ${pandocError || 'встроенный модуль недоступен'}`);
+                }
+                buffer = await exporter.exportMarkdownToDocx(content);
+            }
             await fs.writeFile(filePath, buffer);
         } else {
             await fs.writeFile(filePath, content, 'utf-8');
