@@ -27,7 +27,11 @@
       "index.js",
       "docx-export.js",
       "preload.js",
-      "web/**/*"
+      "web/**/*",
+      "bin/**/*"
+    ],
+    "asarUnpacked": [
+      "bin/**"
     ],
     "win": {
       "target": [
