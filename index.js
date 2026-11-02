@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs').promises;
+const { exportMarkdownToDocx } = require('./docx-export');
 
 let mainWindow = null;
 let pendingFilePath = null;
@@ -116,9 +117,6 @@ ipcMain.handle('save-file-as', async (event, { defaultPath, content }) => {
         filters: [
             { name: 'Markdown', extensions: ['md', 'markdown'] },
             { name: 'Text', extensions: ['txt'] },
-            // Задел на будущее: экспорт в .docx ещё не реализован.
-            // Когда появится конвертер, ниже нужно будет проверять расширение
-            // и вместо записи текста преобразовывать содержимое в docx.
             { name: 'Word Document', extensions: ['docx'] },
             { name: 'All Files', extensions: ['*'] }
         ]
@@ -127,14 +125,14 @@ ipcMain.handle('save-file-as', async (event, { defaultPath, content }) => {
 
     const isDocx = /\.docx$/i.test(filePath);
 
-    // TODO: реализовать реальное сохранение в формате .docx (конвертация Markdown → DOCX).
-    // Пока что .docx выбираемый в диалоге сохраняется как обычный текст,
-    // чтобы пользователь мог подготовить файл и переименовать его позже.
     try {
         if (isDocx) {
-            console.warn('Экспорт в .docx пока не реализован: файл сохранён как plain text.');
+            // Базовая конвертация Markdown → DOCX (текст + формулы Office Math).
+            const buffer = await exportMarkdownToDocx(content);
+            await fs.writeFile(filePath, buffer);
+        } else {
+            await fs.writeFile(filePath, content, 'utf-8');
         }
-        await fs.writeFile(filePath, content, 'utf-8');
         return { canceled: false, file_path: filePath, format: isDocx ? 'docx' : 'text' };
     } catch (err) {
         return { canceled: false, error: err.message };
