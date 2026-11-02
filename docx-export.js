@@ -402,18 +402,18 @@ class Parser {
                         const name = tok ? tok.name : '';
                         const sym = GREEK[name] || SYMBOLS[name] || (tok && tok.raw ? name : null);
                         if (sym != null && sym !== '') {
-                            this.i = save;
                             node = this.buildScript(c, node, [new MathRun(sym)]);
                         } else {
                             this.i = save; // откат: непонятная команда после _/^
                             break;
                         }
-                    } else if (/[a-zA-Z0-9*+\u2032\u2033]/.test(ch)) {
+                    } else if (ch !== undefined && /[a-zA-Z0-9*+\u2032\u2033]/.test(ch)) {
                         this.i++;
-                        this.i = save;
-                        node = this.buildScript(c, node, [new MathRun(ch)]);
+                        node = c === '_'
+                            ? new MathSubScript({ children: [node], subScript: [new MathRun(ch)] })
+                            : new MathSuperScript({ children: [node], superScript: [new MathRun(ch)] });
                     } else {
-                        this.i = save; // невалидный индекс — выводим как есть и идём дальше
+                        this.i = save; // невалидный/пустой индекс — выводим как есть и идём дальше
                         break;
                     }
                 }
@@ -541,46 +541,6 @@ class Parser {
     // Строка до первого непробельного символа (для \tag{...})
     skipSpacesOnly() {
         while (this.i < this.s.length && /\s/.test(this.s[this.i])) this.i++;
-    }
-
-    // \left/ \right: собираем содержимое до парной команды как m:d с нужными скобками.
-    // Те же правила используются для \bigl( ... \bigr) и т.п. (openName === null).
-    parseBracketPair(openName) {
-        const closer = openName === 'left' ? 'right' : 'left';
-        const startI = this.i;
-        let depth = 0;
-        let j = startI;
-        let delimIdx = -1;
-        while (j < this.s.length) {
-            if (this.s.startsWith('\\\\left', j)) { depth++; j += 5; continue; }
-            if (this.s.startsWith('\\\\' + closer, j)) {
-                if (depth === 0) { delimIdx = j; break; }
-                depth--; j += closer.length + 1; continue;
-            }
-            j++;
-        }
-        const innerSrc = delimIdx >= 0 ? this.s.slice(startI, delimIdx) : this.s.slice(startI);
-        this.i = delimIdx >= 0 ? delimIdx : this.s.length;
-        const openDelim = this.parseDelimiterRun();
-        const closeDelim = this.parseDelimiterRun();
-        const children = new Parser(innerSrc).parseGroup(false);
-        const openCh = openDelim ? Parser.mathRunText(openDelim) || '' : '';
-        const closeCh = closeDelim ? Parser.mathRunText(closeDelim) || '' : '';
-        const bracketKind = { '(' : 'round', '[' : 'square', '{': 'curly', '|': 'round', '‖': 'double', '⟨': 'angle' }[openCh] || 'none';
-        const opts = { children };
-        if (bracketKind !== 'none') {
-            if (openCh === '|') opts.beginCharacter = '|';
-            if (openCh === '‖') opts.beginCharacter = '‖';
-            if (closeCh === '|') opts.endCharacter = '|';
-            if (closeCh === '‖') opts.endCharacter = '‖';
-        }
-        switch (bracketKind) {
-            case 'round': return new MathRoundBrackets(opts);
-            case 'square': return new MathSquareBrackets(opts);
-            case 'curly': return new MathCurlyBrackets(opts);
-            case 'angle': return new MathAngledBrackets(opts);
-            default: return new DocxMath({ children });
-        }
     }
 
     // Постфиксы: ', " ^ _, акценты над одним символом
