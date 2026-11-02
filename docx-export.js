@@ -76,12 +76,17 @@ class Parser {
 
     parseGroup(stopAtBrace) {
         const children = [];
-        while (!this.eof()) {
+        while (this.i < this.s.length) {
             const c = this.peekChar();
+            if (c === null) break; // остались только пробелы
             if (stopAtBrace && c === '}') break;
             if (!stopAtBrace && c === ')') break;
+            const before = this.i;
             const nodes = this.parseAtom();
             for (const n of nodes) if (n) children.push(n);
+            // Защита от зависания: если позиция не сдвинулась — принудительно
+            // пропускаем один символ, чтобы цикл гарантированно завершался.
+            if (this.i === before) this.i++;
         }
         return children;
     }
@@ -304,8 +309,11 @@ const INLINE_TOKEN_RE = /(\*\*[^*\n]+\*\*|__[^_\n]+__|~~[^~\n]+~~|`[^`\n]+`|\*[^
 function parseRuns(text, fmt) {
     fmt = fmt || {};
     const runs = [];
+    // Локальная копия регулярки с собственной lastIndex — иначе рекурсивные
+    // вызовы «съедают» позицию общего глобального объекта и цикл зависает.
+    const re = new RegExp(INLINE_TOKEN_RE.source, 'g');
     let last = 0, m;
-    while ((m = INLINE_TOKEN_RE.exec(text)) !== null) {
+    while ((m = re.exec(text)) !== null) {
         if (m.index > last) {
             const plain = text.slice(last, m.index);
             if (plain) runs.push(new TextRun({ text: plain, ...fmt }));
@@ -320,7 +328,7 @@ function parseRuns(text, fmt) {
         } else {
             runs.push(...parseRuns(s.slice(1, -1), { ...fmt, italics: true }));
         }
-        last = INLINE_TOKEN_RE.lastIndex;
+        last = re.lastIndex;
     }
     if (last < text.length) {
         const plain = text.slice(last);

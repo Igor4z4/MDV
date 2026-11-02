@@ -25,6 +25,7 @@
     "files": [
       "package.json",
       "index.js",
+      "docx-export.js",
       "preload.js",
       "web/**/*"
     ],
