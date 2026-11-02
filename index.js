@@ -1,7 +1,22 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs').promises;
-const { exportMarkdownToDocx } = require('./docx-export');
+
+// Ленивая загрузка модуля экспорта: он требует пакет "docx", и если он не установлен
+// (например, после git-pull без npm install), приложение должно запускаться как раньше —
+// с ошибкой только при попытке сохранить в .docx.
+let docxExportModule = null;
+function getDocxExporter() {
+    if (!docxExportModule) {
+        try {
+            docxExportModule = require('./docx-export');
+        } catch (err) {
+            console.error('Модуль экспорта DOCX не загружен:', err.message);
+            return null;
+        }
+    }
+    return docxExportModule;
+}
 
 let mainWindow = null;
 let pendingFilePath = null;
@@ -128,7 +143,11 @@ ipcMain.handle('save-file-as', async (event, { defaultPath, content }) => {
     try {
         if (isDocx) {
             // Базовая конвертация Markdown → DOCX (текст + формулы Office Math).
-            const buffer = await exportMarkdownToDocx(content);
+            const exporter = getDocxExporter();
+            if (!exporter) {
+                throw new Error('Модуль экспорта DOCX недоступен. Выполните "npm install" в папке проекта и перезапустите приложение.');
+            }
+            const buffer = await exporter.exportMarkdownToDocx(content);
             await fs.writeFile(filePath, buffer);
         } else {
             await fs.writeFile(filePath, content, 'utf-8');
