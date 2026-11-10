@@ -1,6 +1,6 @@
 {
   "name": "mdv-markdown-viewer",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Markdown Viewer Pro",
   "main": "index.js",
   "author": "Igor4z4",
@@ -22,6 +22,7 @@
     "directories": {
       "output": "dist"
     },
+    "asar": true,
     "files": [
       "package.json",
       "index.js",
@@ -29,9 +30,6 @@
       "preload.js",
       "web/**/*",
       "bin/**/*"
-    ],
-    "asarUnpacked": [
-      "bin/**"
     ],
     "win": {
       "target": [

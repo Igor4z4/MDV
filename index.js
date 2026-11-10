@@ -18,14 +18,14 @@ const { execFile } = require('child_process');
 // конвертации как отдельной JS-библиотеки не существует (pandoc написан на
 // Haskell), поэтому в проект берётся сам исполняемый файл.
 
-// Внутри asar-архива запустить exe нельзя, поэтому при сборке bin/ exclusion'ится
-// из архива (см. package.json -> build.asarUnpacked) и electron-builder кладёт
-// его рядом как "bin.unpacked". Ниже перебираем все разумные расположения.
+// В собранном приложении bin/ лежит в resources/bin (для portable-сборки —
+// рядом с exe), поэтому __dirname может не покрыть все случаи: ниже перебираются
+// все разумные расположения. Старые варианты *.unpacked оставлены для совместимости.
 const BIN_DIRS = [
     path.join(__dirname, 'bin'),                      // разработка (npm start)
-    path.join(__dirname, 'bin.unpacked'),             // asarUnpacked (NSIS-сборка)
-    path.join(path.dirname(app.getPath('exe')), 'resources', 'bin'),            // portable-сборка
-    path.join(path.dirname(app.getPath('exe')), 'resources', 'app.asar.unpacked', 'bin') // NSIS-сборка
+    path.join(path.dirname(app.getPath('exe')), 'resources', 'app.asar.unpacked', 'bin'), // NSIS-сборка (старая схема)
+    path.join(path.dirname(app.getPath('exe')), 'resources', 'bin'),            // NSIS/portable-сборка (текущая схема)
+    path.join(path.dirname(app.getPath('exe')), 'bin')                          // portable-сборка (fallback)
 ];
 
 const EXE_NAME = process.platform === 'win32' ? 'pandoc.exe' : 'pandoc';
